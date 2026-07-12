@@ -15,6 +15,12 @@ function seedProject(repos: Repositories) {
     baseBranch: 'main',
     worktreeRoot: '/worktrees/demo',
     commands: { test: 'pnpm test' },
+    autonomyMode: 'approve_plan',
+    testExecutionMode: 'sandboxed',
+    baselineChecks: true,
+    maxChangedFiles: 100,
+    maxDiffBytes: 1024 * 1024,
+    blockedPaths: [],
     active: true,
   });
 }
@@ -43,6 +49,7 @@ describe('migrate', () => {
     const db = openDatabase(':memory:');
     const first = migrate(db);
     expect(first.applied).toContain('001_init.sql');
+    expect(first.applied).toContain('002_safety_and_handoff.sql');
 
     const tables = (
       db.prepare("SELECT name FROM sqlite_master WHERE type = 'table'").all() as Array<{
@@ -81,6 +88,8 @@ describe('Repositories', () => {
     const project = seedProject(repos);
     expect(project.commands).toEqual({ test: 'pnpm test' });
     expect(project.active).toBe(true);
+    expect(project.autonomyMode).toBe('approve_plan');
+    expect(project.testExecutionMode).toBe('sandboxed');
 
     const updated = repos.projects.update(project.id, {
       commands: { test: 'pnpm test', lint: 'pnpm lint' },
@@ -134,11 +143,14 @@ describe('Repositories', () => {
       worktreePath: '/worktrees/demo/app-123',
       branch: 'agent/app-123',
       pauseRequested: true,
+      activePgid: 9876,
       lastError: null,
     });
     expect(patched.state).toBe('agent_ready');
     expect(patched.pauseRequested).toBe(true);
     expect(patched.branch).toBe('agent/app-123');
+    expect(patched.baseStale).toBe(false);
+    expect(repos.jobs.listActivePgids()).toEqual([{ jobId: job.id, pgid: 9876 }]);
 
     const summary = repos.jobs.getSummary(job.id);
     expect(summary?.ticket.identifier).toBe('APP-123');
@@ -203,6 +215,7 @@ describe('Repositories', () => {
       finishedAt: '2026-07-12T12:00:00.000Z',
     });
     expect(done.status).toBe('completed');
+    expect(done.outputTruncated).toBe(false);
     expect(repos.agentRuns.listRunningPgids()).toHaveLength(0);
 
     const artifact = repos.artifacts.insert({
@@ -236,6 +249,8 @@ describe('Repositories', () => {
       finishedAt: '2026-07-12T12:01:00.000Z',
     });
     expect(finished.exitCode).toBe(1);
+    expect(finished.baseline).toBe(false);
+    expect(finished.outputTruncated).toBe(false);
     expect(repos.testRuns.listByJob(job.id)).toHaveLength(1);
   });
 
@@ -254,6 +269,15 @@ describe('Repositories', () => {
     expect(changed).toBe(2);
     const runs = repos.agentRuns.listByJob(job.id);
     expect(runs.every((r) => r.status === 'canceled')).toBe(true);
+
+    const testRun = repos.testRuns.insert({
+      jobId: job.id,
+      iteration: 1,
+      commandKey: 'test',
+      command: 'pnpm test',
+    });
+    expect(repos.testRuns.failAllRunning('Durch Neustart unterbrochen')).toBe(1);
+    expect(repos.testRuns.get(testRun.id)?.status).toBe('canceled');
   });
 
   it('Settings: get/set/all', () => {

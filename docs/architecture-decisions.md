@@ -18,17 +18,17 @@ Zum Umsetzungszeitpunkt ist TypeScript 7 (nativer Compiler) aktuell. Projekt-Ref
 
 @dnd-kit ist React-only und scheidet aus. **Entscheidung:** Pragmatic Drag and Drop (framework-agnostisch, kein React-Runtime-Dependency, `canDrop`-Hook) mit zwei kleinen Vue-Composables. Die Transition-Validierung des Boards nutzt dieselben Daten wie das Backend (`@agent/shared`).
 
-## ADR-005: `PLAN.md`/`REVIEW.md` in `<worktree>/.agent/`, Ausschluss per Pathspec
+## ADR-005: Orchestrator-Artefakte in `<worktree>/.agent/`, Ausschluss per Pathspec
 
-Codex läuft sandboxed auf den Worktree begrenzt und muss PLAN.md lesen sowie Planabweichungen dokumentieren können → die Dateien müssen im Worktree liegen. Sie dürfen aber nicht in Commits/Diffs auftauchen. `info/exclude` ist worktree-übergreifend geteilt und würde die Repo-Konfiguration des Nutzers mutieren. **Entscheidung:** Alle git-Aufrufe (add/diff/status/clean) schließen `.agent/` konsequent per Pathspec `':(exclude).agent'` bzw. `clean -e .agent` aus. Kopien aller Artefakte liegen zusätzlich in der Datenbank.
+Codex läuft sandboxed auf den Worktree begrenzt und muss PLAN.md lesen können; zusätzlich ordnet `OWNER.json` den Worktree eindeutig einem Job zu. Die Dateien dürfen nicht in Commits/Diffs auftauchen. `info/exclude` ist worktree-übergreifend geteilt und würde die Repo-Konfiguration des Nutzers mutieren. **Entscheidung:** Alle git-Aufrufe (add/diff/status) schließen `.agent/` konsequent per Pathspec `':(exclude).agent'` aus. Kopien der fachlichen Artefakte liegen zusätzlich in der Datenbank. Der Plan bleibt unveränderlich; Abweichungen stehen im strukturierten Implementierungsbericht.
 
 ## ADR-006: Der Orchestrator schreibt PLAN.md/REVIEW.md — Claude bleibt physisch lesend
 
-Claude arbeitet in Plan- und Review-Phase strikt lesend (`--tools "Read,Glob,Grep" --permission-mode plan`). **Entscheidung:** Claudes stdout-Ergebnis wird vom Orchestrator in `.agent/PLAN.md` bzw. `.agent/REVIEW.md` geschrieben. Damit ist "Claude verändert keine Dateien" technisch garantiert, nicht nur promptbasiert.
+Claude arbeitet in Plan- und Review-Phase ohne Bash/Edit/Write (`--tools "Read,Glob,Grep" --permission-mode plan`). **Entscheidung:** Der Orchestrator validiert Claudes strukturiertes stdout-Ergebnis und rendert daraus `.agent/PLAN.md` bzw. `.agent/REVIEW.md`. Damit ist „Claude verändert keine Dateien" technisch garantiert; die Toolgrenze ist jedoch keine allgemeine OS-Lesesandbox.
 
-## ADR-007: Pause ist soft, Cancel ist hart
+## ADR-007: Pause ist checkpoint-fähig, Cancel ist hart
 
-"Systemzustände dürfen bei laufendem Job nicht manuell verändert werden" kollidiert mit Pause mitten im Lauf. **Entscheidung:** Pause setzt ein persistiertes Flag, das an Phasengrenzen ausgewertet wird (laufende Phase endet regulär, dann → `paused`). Cancel killt die Prozessgruppe sofort → `failed` („Vom Benutzer abgebrochen").
+"Systemzustände dürfen bei laufendem Job nicht manuell verändert werden" kollidiert mit Pause mitten im Lauf. **Entscheidung:** Pause setzt ein persistiertes Flag, das an Phasengrenzen ausgewertet wird (laufende Phase endet regulär, nächste Phase wird als `resume_phase` gespeichert, dann → `paused`). Fortsetzen beginnt an diesem Checkpoint. Cancel killt die Prozessgruppe sofort → `failed` („Vom Benutzer abgebrochen").
 
 ## ADR-008: Ein Rework-Zähler; am Limit immer `needs_human`; `failed` nur für Infrastruktur
 
@@ -36,7 +36,7 @@ Test-Fehlschlag-Schleifen (`testing→rework`) wären sonst unbegrenzt. **Entsch
 
 ## ADR-009: Restart-Recovery über persistierte Prozessgruppen-IDs
 
-Nach einem Crash können Agenten-Kindprozesse weiterlaufen und Worktrees mutieren. **Entscheidung:** PGIDs werden pro Lauf persistiert; beim Boot werden Überlebende per `kill(-pgid)` beendet (ESRCH-tolerant), danach werden Jobs in aktiven Zuständen auf `failed` („Durch Neustart unterbrochen") gesetzt. Retry ist ausschließlich explizit.
+Nach einem Crash können Agenten- oder Test-Kindprozesse weiterlaufen und Worktrees mutieren. **Entscheidung:** PGIDs werden für Agentenläufe und den jeweils aktiven Projektbefehl persistiert; beim Boot werden eindeutige Überlebende per `kill(-pgid)` beendet (ESRCH-tolerant), laufende Agenten-/Testläufe abgebrochen und Jobs in aktiven Zuständen auf `failed` („Durch Neustart unterbrochen") gesetzt. Retry ist ausschließlich explizit.
 
 ## ADR-010: Commits pro Iteration durch den Orchestrator
 
@@ -60,16 +60,32 @@ Die Spec definiert Befehle als Strings („pnpm lint"). **Entscheidung:** Ein kl
 
 ## ADR-015: CLI-Aufrufe gegen installierte Binaries verifiziert
 
-Claude 2.1.197: `-p --output-format json --tools "Read,Glob,Grep" --permission-mode plan --no-session-persistence [--model …] [--max-budget-usd …]`; **`--max-turns` existiert nicht mehr** → Budget-Flag + eigene Wall-Clock-Timeouts. `--bare` bewusst nicht default (bräche macOS-Keychain-OAuth). Codex 0.144.1: `exec --sandbox workspace-write -C <worktree> --ephemeral --ignore-user-config --color never --json`; stdin wird geschlossen übergeben (offenes stdin ließe codex auf einen `<stdin>`-Block warten). Niemals `--dangerously-skip-permissions` / `--dangerously-bypass-approvals-and-sandbox`; Netzwerk in der workspace-write-Sandbox bleibt deaktiviert.
+Claude 2.1.197: `-p --output-format json --tools "Read,Glob,Grep" --permission-mode plan --safe-mode --no-session-persistence --json-schema <phase-schema> [--model …] [--max-budget-usd …]`; **`--max-turns` existiert nicht mehr** → Budget-Flag + eigene Wall-Clock-Timeouts. `--safe-mode` deaktiviert CLAUDE.md, Skills, Plugins, Hooks und MCP, ohne wie `--bare` macOS-Keychain-OAuth abzuschalten. Codex 0.144.1: `exec --sandbox workspace-write -C <worktree> --ephemeral --ignore-user-config --color never`; stdin wird geschlossen übergeben. Niemals `--dangerously-skip-permissions` / `--dangerously-bypass-approvals-and-sandbox`; Netzwerk in der workspace-write-Sandbox bleibt deaktiviert.
 
-## ADR-016: Env-Whitelist für Kindprozesse
+## ADR-016: Getrennte Env-Whitelists pro Vertrauensdomäne
 
-Kinder erhalten nur PATH, HOME, LANG, `NO_COLOR=1`, `CI=1` sowie — falls gesetzt — `ANTHROPIC_API_KEY`, `CLAUDE_CONFIG_DIR`, `CODEX_HOME`. Nie `LINEAR_API_KEY` oder sonstige Secrets. ANSI-Sequenzen werden vor Persistenz/Streaming gestrippt.
+Claude und Codex erhalten jeweils nur ihre eigene Auth-Konfiguration; Git erhält ein isoliertes HOME sowie deaktivierte System-/Globalkonfiguration; Projektbefehle erhalten ein temporäres HOME und keinerlei Modell-/Linear-Credentials. Nie werden Agenten-Credentials an Tests vererbt. ANSI-Sequenzen werden vor Persistenz/Streaming gestrippt.
 
 ## ADR-017: Dev via tsx + tsconfig-paths, Prod via `tsc -b` + dist
 
 Dev: `tsx watch` mit einer tsconfig, deren `paths` `@agent/*` auf Paket-Quellcode mappen (tsx nutzt genau eine tsconfig prozessweit). Prod: Projekt-References bauen `dist/` je Paket; emittierte `@agent/*`-Importe werden zur Laufzeit über Workspace-Symlinks auf `dist` aufgelöst. Vitest löst `@agent/*` über eine gemeinsame Alias-Datei (`vitest.alias.mjs`) auf Quellcode auf.
 
-## ADR-018: Unklare Agenten-Ergebnisse eskalieren zum Menschen
+## ADR-018: Unklare oder gekappte Agenten-Ergebnisse eskalieren zum Menschen
 
-Review-Ausgaben ohne parsebares `VERDICT: PASS|FAIL` (fehlend, mehrdeutig, Output gekappt) sowie Codex-Läufe ohne jegliche Dateiänderung führen zu `needs_human` mit Begründung — nie zu stillem Rework oder Fake-Erfolg.
+Plan, Implementierungsbericht und Review sind strikte, versionierte JSON-Verträge. Claude validiert Plan/Review zusätzlich bereits per `--json-schema`; der Orchestrator validiert alle Verträge mit Zod. Inkonsistente Verdicts (z. B. PASS mit Findings), ungültiges JSON, gekappte Ausgabe sowie Codex-Läufe ohne Dateiänderung führen zu `needs_human` — nie zu stillem Rework oder Fake-Erfolg. Der alte Zeilenparser bleibt nur als isolierte Legacy-Hilfe, nicht als Pipeline-Vertrag.
+
+## ADR-019: Projektcode läuft standardmäßig über Anthropic Sandbox Runtime
+
+Ein konfigurierter Befehl wie `pnpm test` kann vom Agenten veränderte Package-Skripte und damit beliebigen Code starten; `spawn({shell:false})` und eine Env-Whitelist allein sind keine OS-Isolation. **Entscheidung:** Der Standardmodus `sandboxed` startet Setup/Checks über `srt` (macOS `sandbox-exec`, Linux `bubblewrap`), sperrt Netzwerk, schützt bekannte Credential-Pfade, setzt ein temporäres HOME und erlaubt Schreiben nur in Worktree/Sandbox-Temp. `trusted` ist ein expliziter, in der UI markierter Opt-out. Beide Modi verwenden eine credential-freie Testumgebung.
+
+## ADR-020: Worktrees gehören einem Job und werden niemals automatisch bereinigt
+
+Ticketweite Branches kollidieren bei Wiederholungen; `reset --hard`/`clean -fd` kann manuelle Arbeit vernichten. **Entscheidung:** Branch und Pfad enthalten eine Job-ID, `OWNER.json` bindet Job, Repository, Branch und Basis-SHA. Unbekannte, falsch zugeordnete, beschädigte oder schmutzige Worktrees eskalieren. Der Orchestrator löscht keine Verzeichnisse und verwirft keine Änderungen. Commits deaktivieren Hooks und Signierung; Diff-Aufrufe deaktivieren externe Treiber. Aktive `.gitattributes`-Filter werden vor Checkout und Staging fail-closed abgelehnt. Review-Diffs referenzieren den gespeicherten Basis-Commit statt einen beweglichen Branchnamen.
+
+## ADR-021: Planfreigabe und Handoff sind eigene Zustände
+
+Ein Ticket ist häufig keine vollständige Spezifikation, und „Review bestanden" bedeutet ohne Push/Merge nicht „erledigt". **Entscheidung:** `awaiting_plan_approval` hält bei entsprechender Projektpolicy sowie immer bei hohem Risiko/offenen Fragen. Freigabehinweise werden als Artefakt übergeben. Ein bestandenes Review führt zu `ready_for_human`; nur ein Mensch setzt lokal `done`. Basis-/Head-SHA, Stale-Status, Diffstat und Checks stehen im Handoff-Artefakt.
+
+## ADR-022: Deterministischer Completion-Contract
+
+LLM-PASS allein genügt nicht. **Entscheidung:** Vor der Übergabe müssen Baseline (falls aktiviert), alle aggregiert ausgeführten Pflichtchecks, sauberer Worktree, unverändertes Test-HEAD, ungekappte Ausgaben, Diffgrößen-/Dateilimits, Binärdatei-Gate, gesperrte Pfade, Owner-Metadaten und unveränderte Basis bestehen. Verletzungen führen zu `needs_human`; die Agenten können die Gates nicht verändern.

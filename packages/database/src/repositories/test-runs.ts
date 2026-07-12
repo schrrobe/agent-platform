@@ -13,6 +13,9 @@ export interface TestRunRow {
   stdout: string;
   stderr: string;
   duration_ms: number | null;
+  baseline: number;
+  sandboxed: number;
+  output_truncated: number;
   started_at: string;
   finished_at: string | null;
 }
@@ -29,6 +32,9 @@ function mapTestRun(row: TestRunRow): TestRun {
     stdout: row.stdout,
     stderr: row.stderr,
     durationMs: row.duration_ms,
+    baseline: row.baseline === 1,
+    sandboxed: row.sandboxed === 1,
+    outputTruncated: row.output_truncated === 1,
     startedAt: row.started_at,
     finishedAt: row.finished_at,
   };
@@ -40,6 +46,7 @@ export interface TestRunPatch {
   stdout?: string;
   stderr?: string;
   durationMs?: number | null;
+  outputTruncated?: boolean;
   finishedAt?: string | null;
 }
 
@@ -51,14 +58,26 @@ export class TestRunsRepository {
     iteration: number;
     commandKey: CommandKey;
     command: string;
+    baseline?: boolean;
+    sandboxed?: boolean;
   }): TestRun {
     const id = newId();
     this.db
       .prepare(
-        `INSERT INTO test_runs (id, job_id, iteration, command_key, command, status, started_at)
-         VALUES (?, ?, ?, ?, ?, 'running', ?)`,
+        `INSERT INTO test_runs
+          (id, job_id, iteration, command_key, command, status, baseline, sandboxed, started_at)
+         VALUES (?, ?, ?, ?, ?, 'running', ?, ?, ?)`,
       )
-      .run(id, input.jobId, input.iteration, input.commandKey, input.command, nowIso());
+      .run(
+        id,
+        input.jobId,
+        input.iteration,
+        input.commandKey,
+        input.command,
+        input.baseline ? 1 : 0,
+        input.sandboxed ? 1 : 0,
+        nowIso(),
+      );
     const run = this.get(id);
     if (!run) throw new Error(`TestRun nach Insert nicht auffindbar: ${id}`);
     return run;
@@ -77,6 +96,7 @@ export class TestRunsRepository {
       stdout: 'stdout',
       stderr: 'stderr',
       durationMs: 'duration_ms',
+      outputTruncated: 'output_truncated',
       finishedAt: 'finished_at',
     };
     const entries = (Object.entries(patch) as Array<[keyof TestRunPatch, unknown]>).filter(
@@ -86,7 +106,10 @@ export class TestRunsRepository {
       const sets = entries.map(([key]) => `${columns[key]} = ?`).join(', ');
       this.db
         .prepare(`UPDATE test_runs SET ${sets} WHERE id = ?`)
-        .run(...entries.map(([, value]) => value), id);
+        .run(
+          ...entries.map(([, value]) => (typeof value === 'boolean' ? (value ? 1 : 0) : value)),
+          id,
+        );
     }
     const run = this.get(id);
     if (!run) throw new Error(`TestRun nicht gefunden: ${id}`);
@@ -98,5 +121,15 @@ export class TestRunsRepository {
       .prepare('SELECT * FROM test_runs WHERE job_id = ? ORDER BY started_at ASC, id ASC')
       .all(jobId) as TestRunRow[];
     return rows.map(mapTestRun);
+  }
+
+  failAllRunning(error: string): number {
+    const result = this.db
+      .prepare(
+        `UPDATE test_runs SET status = 'canceled', stderr = ?, finished_at = ?
+         WHERE status = 'running'`,
+      )
+      .run(error, nowIso());
+    return result.changes;
   }
 }

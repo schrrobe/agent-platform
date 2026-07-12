@@ -11,7 +11,7 @@ import type {
 } from '@agent/shared';
 import { ClaudeCodeAdapter } from '../src/adapters/claude.js';
 import { CodexCliAdapter } from '../src/adapters/codex.js';
-import { buildChildEnv } from '../src/env.js';
+import { buildChildEnv, buildCodexEnv, buildGitEnv, buildTestEnv } from '../src/env.js';
 
 function makeResult(partial: Partial<ProcessResult> = {}): ProcessResult {
   return {
@@ -66,6 +66,11 @@ describe('ClaudeCodeAdapter', () => {
     expect(args).toEqual(expect.arrayContaining(['--output-format', 'json']));
     expect(args).toEqual(expect.arrayContaining(['--tools', 'Read,Glob,Grep']));
     expect(args).toEqual(expect.arrayContaining(['--permission-mode', 'plan']));
+    expect(args).toContain('--safe-mode');
+    expect(args).toContain('--json-schema');
+    expect(JSON.parse(args[args.indexOf('--json-schema') + 1] as string)).toMatchObject({
+      type: 'object',
+    });
     expect(args).toContain('--no-session-persistence');
     expect(args).toEqual(expect.arrayContaining(['--model', 'sonnet']));
     expect(args).toEqual(expect.arrayContaining(['--max-budget-usd', '2']));
@@ -85,6 +90,19 @@ describe('ClaudeCodeAdapter', () => {
     expect(res.output).toBe('# Ziel\nPlan');
   });
 
+  it('bevorzugt das validierte structured_output-Feld', async () => {
+    const runner = new RecordingRunner(
+      makeResult({
+        stdout: JSON.stringify({
+          result: 'Fallback',
+          structured_output: { version: 1, goal: 'Strukturiert' },
+        }),
+      }),
+    );
+    const result = await new ClaudeCodeAdapter({ runner, env: {} }).execute(baseInput());
+    expect(JSON.parse(result.output)).toMatchObject({ version: 1, goal: 'Strukturiert' });
+  });
+
   it('fällt bei Nicht-JSON auf Rohtext zurück und meldet Fehlerstatus', async () => {
     const runner = new RecordingRunner(makeResult({ exitCode: 1, stdout: 'boom', stderr: 'err' }));
     const adapter = new ClaudeCodeAdapter({ runner, env: {} });
@@ -102,6 +120,14 @@ describe('ClaudeCodeAdapter', () => {
     const cancelRunner = new RecordingRunner(makeResult({ canceled: true, exitCode: null }));
     const c = await new ClaudeCodeAdapter({ runner: cancelRunner, env: {} }).execute(baseInput());
     expect(c.status).toBe('canceled');
+  });
+
+  it('reicht eine gekappte Prozessausgabe fail-closed an die Pipeline weiter', async () => {
+    const runner = new RecordingRunner(
+      makeResult({ stdout: '{"result":"PLAN"}', truncated: true }),
+    );
+    const result = await new ClaudeCodeAdapter({ runner, env: {} }).execute(baseInput());
+    expect(result.truncated).toBe(true);
   });
 });
 
@@ -167,5 +193,29 @@ describe('buildChildEnv', () => {
     expect(env.CI).toBe('1');
     expect(env.LINEAR_API_KEY).toBeUndefined();
     expect(env.AWS_SECRET_ACCESS_KEY).toBeUndefined();
+  });
+
+  it('trennt Codex-, Git- und Test-Credentials strikt', () => {
+    const source = {
+      PATH: '/usr/bin',
+      HOME: '/home/real',
+      ANTHROPIC_API_KEY: 'ant',
+      OPENAI_API_KEY: 'openai',
+      CODEX_HOME: '/home/real/.codex',
+    };
+    const codex = buildCodexEnv(source);
+    expect(codex.OPENAI_API_KEY).toBe('openai');
+    expect(codex.ANTHROPIC_API_KEY).toBeUndefined();
+
+    const git = buildGitEnv(source, '/tmp/git-home');
+    expect(git.HOME).toBe('/tmp/git-home');
+    expect(git.OPENAI_API_KEY).toBeUndefined();
+    expect(git.GIT_CONFIG_NOSYSTEM).toBe('1');
+
+    const tests = buildTestEnv('/tmp/test-home', source);
+    expect(tests.HOME).toBe('/tmp/test-home');
+    expect(tests.ANTHROPIC_API_KEY).toBeUndefined();
+    expect(tests.OPENAI_API_KEY).toBeUndefined();
+    expect(tests.CODEX_HOME).toBeUndefined();
   });
 });

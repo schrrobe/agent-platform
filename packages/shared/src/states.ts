@@ -4,12 +4,15 @@
 export const JOB_STATES = [
   'inbox',
   'agent_ready',
+  'preflight',
   'planning',
+  'awaiting_plan_approval',
   'implementing',
   'testing',
   'review',
   'rework',
   'needs_human',
+  'ready_for_human',
   'done',
   'failed',
   'paused',
@@ -30,16 +33,28 @@ export type JobState = (typeof JOB_STATES)[number];
  *   Phasengrenzen greift — auch nach Test- und Review-Phase.
  */
 export const TRANSITIONS: Readonly<Record<JobState, readonly JobState[]>> = {
-  inbox: ['agent_ready', 'paused'],
-  agent_ready: ['planning', 'failed', 'paused'],
-  planning: ['implementing', 'needs_human', 'failed', 'paused'],
+  inbox: ['agent_ready', 'failed', 'paused'],
+  agent_ready: [
+    'preflight',
+    'planning',
+    'implementing',
+    'testing',
+    'review',
+    'needs_human',
+    'failed',
+    'paused',
+  ],
+  preflight: ['planning', 'needs_human', 'failed', 'paused'],
+  planning: ['awaiting_plan_approval', 'implementing', 'needs_human', 'failed', 'paused'],
+  awaiting_plan_approval: ['agent_ready', 'inbox', 'failed'],
   implementing: ['testing', 'needs_human', 'failed', 'paused'],
   testing: ['review', 'rework', 'needs_human', 'failed', 'paused'],
-  review: ['done', 'rework', 'needs_human', 'failed', 'paused'],
+  review: ['ready_for_human', 'rework', 'needs_human', 'failed', 'paused'],
   rework: ['implementing', 'paused'],
   failed: ['agent_ready', 'paused'],
-  needs_human: ['agent_ready', 'done', 'paused'],
-  paused: ['agent_ready', 'inbox'],
+  needs_human: ['agent_ready', 'ready_for_human', 'failed', 'paused'],
+  ready_for_human: ['done'],
+  paused: ['agent_ready', 'inbox', 'failed'],
   done: [],
 };
 
@@ -51,19 +66,23 @@ export const TRANSITIONS: Readonly<Record<JobState, readonly JobState[]>> = {
 export const MANUAL_TRANSITIONS: Readonly<Record<JobState, readonly JobState[]>> = {
   inbox: ['agent_ready'],
   agent_ready: [],
+  preflight: [],
   planning: [],
+  awaiting_plan_approval: ['inbox'],
   implementing: [],
   testing: [],
   review: [],
   rework: [],
   failed: ['agent_ready'],
-  needs_human: ['agent_ready', 'done'],
+  needs_human: ['agent_ready', 'ready_for_human'],
+  ready_for_human: ['done'],
   paused: ['agent_ready', 'inbox'],
   done: [],
 };
 
 /** Zustände, in denen die Pipeline aktiv arbeitet (laufender Job). */
 export const ACTIVE_STATES: readonly JobState[] = [
+  'preflight',
   'planning',
   'implementing',
   'testing',

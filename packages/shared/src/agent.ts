@@ -23,6 +23,8 @@ export interface AgentExecutionResult {
   output: string;
   /** Roh-Ausgabe (gekappt) für Diagnose. */
   rawOutput: string;
+  /** Ausgabe wurde am konfigurierten Größenlimit gekappt. */
+  truncated: boolean;
   error: string | null;
   durationMs: number;
 }

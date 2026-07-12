@@ -74,6 +74,7 @@ export abstract class CliAgentAdapter implements AgentAdapter {
         exitCode: result.exitCode,
         output,
         rawOutput: result.stdout,
+        truncated: result.truncated,
         error,
         durationMs: result.durationMs,
       };

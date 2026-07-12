@@ -15,6 +15,7 @@ export const WS_EVENT_TYPES = [
   'job.updated',
   'job.state_changed',
   'job.started',
+  'job.ready_for_human',
   'job.completed',
   'job.failed',
   'job.paused',
@@ -39,6 +40,7 @@ export interface WsPayloads {
   'job.updated': { job: JobSummary };
   'job.state_changed': { job: JobSummary; fromState: JobState; toState: JobState };
   'job.started': { job: JobSummary };
+  'job.ready_for_human': { job: JobSummary };
   'job.completed': { job: JobSummary };
   'job.failed': { job: JobSummary; error: string };
   'job.paused': { job: JobSummary };

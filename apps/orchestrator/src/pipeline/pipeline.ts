@@ -5,27 +5,37 @@ import {
   buildImplementPrompt,
   buildPlanPrompt,
   buildReviewPrompt,
-  parseVerdict,
+  parseImplementationResult,
+  parsePlanResult,
+  parseReviewResult,
+  renderImplementationMarkdown,
+  renderPlanMarkdown,
+  renderReviewMarkdown,
   type ClaudeCodeAdapter,
   type CodexCliAdapter,
 } from '@agent/agents';
-import { AGENT_DIR, type GitService } from '@agent/git';
+import { AGENT_DIR, GitConflictError, type ChangedFile, type GitService } from '@agent/git';
 import type { LinearService } from '@agent/linear';
 import { decideAfterFailedTests, decideAfterReview, assertTransition } from '@agent/workflow';
 import {
-  COMMAND_KEYS,
+  CHECK_COMMAND_KEYS,
   type AgentName,
   type AgentPhase,
+  type ArtifactType,
+  type CheckCommandKey,
   type Job,
   type JobState,
+  type PipelinePhase,
+  type PlanResult,
   type Project,
-  type ProcessRunner,
+  type ReviewResult,
   type Ticket,
 } from '@agent/shared';
 import type { Repositories } from '@agent/database';
 import type { AppConfig } from '../config.js';
 import type { Publisher } from '../events/publisher.js';
 import type { LogStore } from '../services/log-store.js';
+import type { TestSandbox } from '../services/test-sandbox.js';
 import { tokenizeCommand } from '../services/command.js';
 import { PipelineAbort, abortReasonOf } from './errors.js';
 
@@ -39,21 +49,18 @@ export interface PipelineDeps {
   linear: LinearService;
   publisher: Publisher;
   logStore: LogStore;
-  executor: ProcessRunner;
-  childEnv: Record<string, string>;
+  testSandbox: TestSandbox;
 }
 
 /** Vom Menschen zu behandelnder Ausgang (kein Infrastrukturfehler). */
 class NeedsHumanOutcome {
-  constructor(readonly message: string) {}
+  constructor(
+    readonly message: string,
+    readonly resumePhase?: PipelinePhase | null,
+  ) {}
 }
 
-/**
- * Deterministische Ausführung eines Jobs durch die Workflow-Phasen. Die
- * Zustandslogik (Übergänge, Limits, Ausgänge) liegt hier und in der
- * Workflow-Engine — nie im Agenten. Pause wird an Phasengrenzen ausgewertet,
- * Cancel/Deadline über das AbortSignal (ADR-007, ADR-008).
- */
+/** Deterministische, checkpoint-fähige Job-Pipeline. */
 export class JobPipeline {
   constructor(private readonly deps: PipelineDeps) {}
 
@@ -68,74 +75,125 @@ export class JobPipeline {
 
     try {
       await this.ensureWorktreeReady(jobId, project, ticket, log);
+      let next: PipelinePhase = this.mustJob(jobId).resumePhase ?? 'preflight';
 
-      // Planung
-      if (await this.boundary(jobId, signal)) return;
-      await this.transition(jobId, 'planning', 'Planung gestartet');
-      await this.planPhase(jobId, ticket, project, signal, log);
+      if (next === 'preflight') {
+        if (await this.boundary(jobId, signal, 'preflight')) return;
+        await this.transition(jobId, 'preflight', 'Sicherheits-Preflight gestartet');
+        await this.preflightPhase(jobId, project, signal, log);
+        this.deps.repos.jobs.update(jobId, { resumePhase: 'planning' });
+        next = 'planning';
+      }
 
-      // Implementierungs-/Test-/Review-Schleife
-      for (;;) {
-        const job = this.mustJob(jobId);
-        const iteration = job.reviewLoopCount + 1;
-        const isRework = job.reviewLoopCount > 0;
-
-        if (await this.boundary(jobId, signal)) return;
-        await this.transition(jobId, 'implementing', 'Implementierung gestartet');
-        await this.implementPhase(jobId, ticket, project, iteration, isRework, signal, log);
-
-        if (await this.boundary(jobId, signal)) return;
-        await this.transition(jobId, 'testing', 'Tests gestartet');
-        const testsOk = await this.testPhase(jobId, project, iteration, signal, log);
-
-        if (!testsOk) {
-          const next = decideAfterFailedTests({
-            reviewLoopCount: job.reviewLoopCount,
-            maxReviewLoops: this.deps.config.limits.maxReviewLoops,
-          });
-          if (next === 'needs_human') {
-            await this.finishNeedsHuman(
-              jobId,
-              'Pflichtprüfungen nach maximaler Schleifenzahl weiterhin rot',
-            );
-            return;
-          }
-          await this.enterRework(jobId, 'Tests fehlgeschlagen — Nacharbeit');
-          continue;
-        }
-
-        if (await this.boundary(jobId, signal)) return;
-        await this.transition(jobId, 'review', 'Review gestartet');
-        const verdict = await this.reviewPhase(jobId, ticket, project, iteration, signal, log);
-
-        if (verdict === 'PASS') {
-          await this.finishDone(jobId, ticket);
+      if (next === 'planning') {
+        if (await this.boundary(jobId, signal, 'planning')) return;
+        await this.transition(jobId, 'planning', 'Planung gestartet');
+        const plan = await this.planPhase(jobId, ticket, project, signal, log);
+        this.deps.repos.jobs.update(jobId, { resumePhase: 'implementing' });
+        const approvalReasons = this.approvalReasons(project, plan);
+        if (approvalReasons.length > 0) {
+          await this.transition(
+            jobId,
+            'awaiting_plan_approval',
+            `Plan wartet auf Freigabe: ${approvalReasons.join('; ')}`,
+          );
           return;
         }
-        const next = decideAfterReview('FAIL', {
-          reviewLoopCount: job.reviewLoopCount,
+        this.deps.repos.jobs.update(jobId, { planApprovedAt: new Date().toISOString() });
+        next = 'implementing';
+      }
+
+      for (;;) {
+        const beforeImplementation = this.mustJob(jobId);
+        const iteration = beforeImplementation.reviewLoopCount + 1;
+        const isRework = beforeImplementation.reviewLoopCount > 0;
+
+        if (next === 'implementing') {
+          if (await this.boundary(jobId, signal, 'implementing')) return;
+          await this.transition(jobId, 'implementing', 'Implementierung gestartet');
+          await this.implementPhase(jobId, ticket, project, iteration, isRework, signal, log);
+          this.deps.repos.jobs.update(jobId, { resumePhase: 'testing' });
+          next = 'testing';
+        }
+
+        if (next === 'testing') {
+          if (await this.boundary(jobId, signal, 'testing')) return;
+          await this.transition(jobId, 'testing', 'Prüfungen gestartet');
+          const testsOk = await this.testPhase(jobId, project, iteration, signal, log);
+          if (!testsOk) {
+            const job = this.mustJob(jobId);
+            const target = decideAfterFailedTests({
+              reviewLoopCount: job.reviewLoopCount,
+              maxReviewLoops: this.deps.config.limits.maxReviewLoops,
+            });
+            if (target === 'needs_human') {
+              await this.finishNeedsHuman(
+                jobId,
+                'Pflichtprüfungen nach maximaler Schleifenzahl weiterhin rot',
+                'implementing',
+              );
+              return;
+            }
+            await this.enterRework(jobId, 'Prüfungen fehlgeschlagen — Nacharbeit');
+            next = 'implementing';
+            continue;
+          }
+          this.deps.repos.jobs.update(jobId, { resumePhase: 'review' });
+          next = 'review';
+        }
+
+        if (await this.boundary(jobId, signal, 'review')) return;
+        await this.transition(jobId, 'review', 'Review gestartet');
+        const review = await this.reviewPhase(jobId, ticket, project, iteration, signal, log);
+        const target = decideAfterReview(review.verdict, {
+          reviewLoopCount: this.mustJob(jobId).reviewLoopCount,
           maxReviewLoops: this.deps.config.limits.maxReviewLoops,
         });
-        if (next === 'needs_human') {
-          await this.finishNeedsHuman(jobId, 'Review nach maximaler Schleifenzahl weiterhin FAIL');
+        if (target === 'ready_for_human') {
+          await this.completeForHandoff(jobId, ticket, project);
+          return;
+        }
+        if (target === 'needs_human') {
+          await this.finishNeedsHuman(
+            jobId,
+            'Review nach maximaler Schleifenzahl weiterhin FAIL',
+            'implementing',
+          );
           return;
         }
         await this.enterRework(jobId, 'Review fehlgeschlagen — Nacharbeit');
+        next = 'implementing';
       }
     } catch (error) {
       if (error instanceof PipelineAbort) throw error;
       if (signal.aborted) throw new PipelineAbort(abortReasonOf(signal), { cause: error });
       if (error instanceof NeedsHumanOutcome) {
-        await this.finishNeedsHuman(jobId, error.message);
+        const resumePhase =
+          error.resumePhase === undefined
+            ? this.resumePhaseForState(this.mustJob(jobId))
+            : error.resumePhase;
+        await this.finishNeedsHuman(jobId, error.message, resumePhase);
+        return;
+      }
+      if (error instanceof GitConflictError) {
+        await this.finishNeedsHuman(
+          jobId,
+          error.message,
+          this.resumePhaseForState(this.mustJob(jobId)),
+        );
         return;
       }
       const message = error instanceof Error ? error.message : String(error);
       log.error({ err: error }, 'Pipeline-Fehler');
       await this.fail(jobId, message);
+    } finally {
+      try {
+        await this.deps.testSandbox.cleanup(jobId);
+      } catch (error) {
+        log.warn({ err: error }, 'Sandbox-Temp konnte nicht vollständig entfernt werden');
+      }
     }
   }
-
-  // ---- Phasen ---------------------------------------------------------------
 
   private async ensureWorktreeReady(
     jobId: string,
@@ -143,19 +201,58 @@ export class JobPipeline {
     ticket: Ticket,
     log: Logger,
   ): Promise<void> {
+    const job = this.mustJob(jobId);
     const result = await this.deps.git.ensureWorktree({
       repositoryPath: project.repositoryPath,
       worktreeRoot: project.worktreeRoot,
       identifier: ticket.identifier,
-      baseBranch: project.baseBranch,
+      jobId,
+      baseBranch: job.baseBranch,
+      expectedBaseCommit: job.baseCommitSha,
     });
-    await this.deps.git.cleanWorktree(result.worktreePath);
+    await this.deps.git.assertWorktreeClean(result.worktreePath);
+    const head = await this.deps.git.currentHead(result.worktreePath);
     this.deps.repos.jobs.update(jobId, {
       worktreePath: result.worktreePath,
       branch: result.branch,
+      baseCommitSha: result.baseCommit,
+      headCommitSha: head,
     });
     this.system(jobId, `Worktree bereit: ${result.worktreePath} (${result.branch})`);
     log.info({ worktree: result.worktreePath, branch: result.branch }, 'Worktree bereit');
+  }
+
+  private async preflightPhase(
+    jobId: string,
+    project: Project,
+    signal: AbortSignal,
+    log: Logger,
+  ): Promise<void> {
+    if (project.testExecutionMode === 'trusted') {
+      this.system(jobId, 'WARNUNG: Projektbefehle laufen im expliziten Trusted-Host-Modus');
+    }
+    if (project.commands.setup) {
+      const setupOk = await this.runCommandKeys(jobId, project, 0, ['setup'], true, signal, log);
+      if (!setupOk) {
+        throw new NeedsHumanOutcome('Projekt-Setup ist bereits auf der Basis fehlgeschlagen');
+      }
+    }
+    if (!project.baselineChecks) {
+      this.system(jobId, 'Baseline-Prüfungen laut Projektkonfiguration übersprungen');
+      return;
+    }
+    const keys = CHECK_COMMAND_KEYS.filter((key) => project.commands[key]);
+    if (keys.length === 0) {
+      this.system(jobId, 'Keine Baseline-Prüfungen konfiguriert');
+      return;
+    }
+    const ok = await this.runCommandKeys(jobId, project, 0, keys, true, signal, log);
+    if (!ok) {
+      throw new NeedsHumanOutcome(
+        'Basisbranch ist bereits vor der Agentenänderung rot; automatische Implementierung gestoppt',
+      );
+    }
+    this.system(jobId, 'Baseline-Prüfungen bestanden');
   }
 
   private async planPhase(
@@ -164,9 +261,14 @@ export class JobPipeline {
     project: Project,
     signal: AbortSignal,
     log: Logger,
-  ): Promise<void> {
+  ): Promise<PlanResult> {
     const job = this.mustJob(jobId);
-    const prompt = buildPlanPrompt({ ticket, baseBranch: project.baseBranch });
+    const baselineReport = this.buildTestReport(jobId, 0);
+    const prompt = buildPlanPrompt({
+      ticket,
+      baseBranch: job.baseBranch,
+      baselineReport,
+    });
     const result = await this.runAgent(
       { jobId, phase: 'plan', agent: 'claude', prompt, cwd: this.worktree(job) },
       this.deps.claude,
@@ -175,15 +277,37 @@ export class JobPipeline {
     if (result.status !== 'completed' || result.output.trim().length === 0) {
       throw new NeedsHumanOutcome(`Planung nicht verwertbar: ${result.error ?? 'leere Ausgabe'}`);
     }
-    await this.writeArtifactFile(job, 'PLAN.md', result.output);
+    if (result.truncated) {
+      throw new NeedsHumanOutcome(
+        'Plan-Ausgabe wurde gekappt und wird nicht automatisch verwendet',
+      );
+    }
+    let plan: PlanResult;
+    try {
+      plan = parsePlanResult(result.output);
+    } catch (error) {
+      throw new NeedsHumanOutcome(error instanceof Error ? error.message : String(error));
+    }
+    const markdown = renderPlanMarkdown(plan);
+    await this.writeArtifactFile(job, 'PLAN.md', markdown);
     this.recordArtifact(
       jobId,
       result.runId,
       'plan',
       path.join(this.worktree(job), AGENT_DIR, 'PLAN.md'),
-      result.output,
+      markdown,
     );
-    log.info('PLAN.md erstellt');
+    this.recordArtifact(jobId, result.runId, 'plan_contract', null, JSON.stringify(plan, null, 2));
+    log.info({ riskLevel: plan.riskLevel, questions: plan.questions.length }, 'Plan erstellt');
+    return plan;
+  }
+
+  private approvalReasons(project: Project, plan: PlanResult): string[] {
+    const reasons: string[] = [];
+    if (project.autonomyMode === 'approve_plan') reasons.push('Projekt verlangt Planfreigabe');
+    if (plan.riskLevel === 'high') reasons.push('hohes Planrisiko');
+    if (plan.questions.length > 0) reasons.push(`${plan.questions.length} offene Frage(n)`);
+    return reasons;
   }
 
   private async implementPhase(
@@ -197,8 +321,21 @@ export class JobPipeline {
   ): Promise<void> {
     const job = this.mustJob(jobId);
     const worktree = this.worktree(job);
+    const plan = this.deps.repos.artifacts.latestByType(jobId, 'plan')?.content;
+    if (!plan) throw new NeedsHumanOutcome('Freigegebener Plan fehlt', 'planning');
+    const approvalNote = this.deps.repos.artifacts.latestByType(jobId, 'approval')?.content ?? null;
+    const reviewFeedback = isRework
+      ? (this.deps.repos.artifacts.latestByType(jobId, 'review')?.content ?? null)
+      : null;
     const testFeedback = isRework ? this.buildTestReport(jobId, iteration - 1) : null;
-    const prompt = buildImplementPrompt({ ticket, isRework, testFeedback });
+    const prompt = buildImplementPrompt({
+      ticket,
+      plan,
+      isRework,
+      approvalNote,
+      reviewFeedback,
+      testFeedback,
+    });
     const result = await this.runAgent(
       { jobId, phase: isRework ? 'rework' : 'implement', agent: 'codex', prompt, cwd: worktree },
       this.deps.codex,
@@ -207,21 +344,80 @@ export class JobPipeline {
     if (result.status !== 'completed') {
       throw new Error(`Codex-Implementierung fehlgeschlagen: ${result.error ?? 'unbekannt'}`);
     }
-    this.recordArtifact(jobId, result.runId, 'summary', null, result.output);
+    if (result.truncated) {
+      throw new NeedsHumanOutcome(
+        'Codex-Ergebnis wurde gekappt; Änderungen bleiben zur Prüfung erhalten',
+      );
+    }
+    let implementation;
+    try {
+      implementation = parseImplementationResult(result.output);
+    } catch (error) {
+      throw new NeedsHumanOutcome(error instanceof Error ? error.message : String(error));
+    }
 
+    this.verifyOwner(jobId, project);
     const commit = await this.deps.git.commitAll(
       worktree,
       `agent: ${ticket.identifier} Iteration ${iteration}`,
     );
-    const changed = await this.deps.git.changedFiles(worktree, project.baseBranch);
+    const base = this.baseCommit(job);
+    const changed = await this.deps.git.changedFiles(worktree, base);
     if (!commit && changed.length === 0) {
       throw new NeedsHumanOutcome('Codex hat keine Dateiänderungen vorgenommen');
     }
+    const head = await this.deps.git.currentHead(worktree);
+    this.deps.repos.jobs.update(jobId, { headCommitSha: head });
+    await this.enforceDiffPolicy(worktree, base, project, changed);
+    await this.deps.git.assertWorktreeClean(worktree);
+    const rendered = renderImplementationMarkdown(implementation);
+    this.recordArtifact(jobId, result.runId, 'implementation', null, rendered);
+    this.recordArtifact(jobId, result.runId, 'summary', null, result.output);
     this.system(
       jobId,
-      `Implementierung committet (${changed.length} geänderte Dateien${commit ? `, ${commit.slice(0, 8)}` : ''})`,
+      `Implementierung committet (${changed.length} Dateien${commit ? `, ${commit.slice(0, 8)}` : ''})`,
     );
-    log.info({ changedFiles: changed.length }, 'Implementierung abgeschlossen');
+    log.info({ changedFiles: changed.length, head }, 'Implementierung abgeschlossen');
+  }
+
+  private async enforceDiffPolicy(
+    worktree: string,
+    base: string,
+    project: Project,
+    changed: ChangedFile[],
+  ): Promise<void> {
+    if (changed.length > project.maxChangedFiles) {
+      throw new NeedsHumanOutcome(
+        `Diff umfasst ${changed.length} Dateien; Projektlimit ist ${project.maxChangedFiles}`,
+      );
+    }
+    const changedPaths = changed.flatMap((entry) =>
+      entry.previousPath ? [entry.previousPath, entry.path] : [entry.path],
+    );
+    const blocked = changedPaths.filter((changed) =>
+      project.blockedPaths.some((prefix) => {
+        const normalized = prefix.replace(/^\.\/+/, '').replace(/\/+$/, '');
+        return changed === normalized || changed.startsWith(`${normalized}/`);
+      }),
+    );
+    if (blocked.length > 0) {
+      throw new NeedsHumanOutcome(`Diff berührt gesperrte Pfade: ${blocked.join(', ')}`);
+    }
+    const [diff, binaryFiles] = await Promise.all([
+      this.deps.git.diffAgainstBase(worktree, base),
+      this.deps.git.binaryChangedFiles(worktree, base),
+    ]);
+    const bytes = Buffer.byteLength(diff);
+    if (bytes > project.maxDiffBytes) {
+      throw new NeedsHumanOutcome(
+        `Diff ist ${bytes} Bytes groß; Projektlimit ist ${project.maxDiffBytes}`,
+      );
+    }
+    if (binaryFiles.length > 0) {
+      throw new NeedsHumanOutcome(
+        `Binäre Änderungen benötigen eine menschliche Prüfung: ${binaryFiles.join(', ')}`,
+      );
+    }
   }
 
   private async testPhase(
@@ -231,20 +427,63 @@ export class JobPipeline {
     signal: AbortSignal,
     log: Logger,
   ): Promise<boolean> {
-    const job = this.mustJob(jobId);
-    const worktree = this.worktree(job);
-    const configured = COMMAND_KEYS.filter((key) => project.commands[key]);
-    if (configured.length === 0) {
-      this.system(jobId, 'Keine Projektbefehle konfiguriert — Testphase übersprungen');
+    if (project.commands.setup) {
+      const setupOk = await this.runCommandKeys(
+        jobId,
+        project,
+        iteration,
+        ['setup'],
+        false,
+        signal,
+        log,
+      );
+      if (!setupOk) return false;
+    }
+    const keys = CHECK_COMMAND_KEYS.filter((key) => project.commands[key]);
+    if (keys.length === 0) {
+      this.system(jobId, 'Keine Projektprüfungen konfiguriert — Testphase übersprungen');
       return true;
     }
-    for (const key of configured) {
-      const commandString = project.commands[key] as string;
+    const ok = await this.runCommandKeys(jobId, project, iteration, keys, false, signal, log);
+    this.system(
+      jobId,
+      ok ? 'Alle Pflichtprüfungen bestanden' : 'Mindestens eine Pflichtprüfung ist rot',
+    );
+    return ok;
+  }
+
+  private async runCommandKeys(
+    jobId: string,
+    project: Project,
+    iteration: number,
+    keys: readonly (CheckCommandKey | 'setup')[],
+    baseline: boolean,
+    signal: AbortSignal,
+    log: Logger,
+  ): Promise<boolean> {
+    const worktree = this.worktree(this.mustJob(jobId));
+    let allOk = true;
+    for (const key of keys) {
+      const commandString = project.commands[key];
+      if (!commandString) continue;
+      let command: string;
+      let args: string[];
+      try {
+        ({ command, args } = tokenizeCommand(commandString));
+      } catch (error) {
+        throw new Error(
+          `Ungültiger ${key}-Befehl: ${error instanceof Error ? error.message : String(error)}`,
+          { cause: error },
+        );
+      }
+      const beforeHead = await this.deps.git.currentHead(worktree);
       const testRun = this.deps.repos.testRuns.insert({
         jobId,
         iteration,
         commandKey: key,
         command: commandString,
+        baseline,
+        sandboxed: project.testExecutionMode === 'sandboxed',
       });
       this.deps.publisher.emit('test.started', jobId, {
         testRunId: testRun.id,
@@ -252,26 +491,12 @@ export class JobPipeline {
         command: commandString,
       });
 
-      let command: string;
-      let args: string[];
-      try {
-        ({ command, args } = tokenizeCommand(commandString));
-      } catch (error) {
-        const message = error instanceof Error ? error.message : String(error);
-        this.deps.repos.testRuns.update(testRun.id, {
-          status: 'failed',
-          exitCode: null,
-          stderr: message,
-          finishedAt: new Date().toISOString(),
-        });
-        throw new Error(`Ungültiger ${key}-Befehl: ${message}`, { cause: error });
-      }
-
-      const handle = this.deps.executor.run({
+      const { handle } = await this.deps.testSandbox.run({
+        jobId,
+        mode: project.testExecutionMode,
         command,
         args,
         cwd: worktree,
-        env: this.deps.childEnv,
         timeoutMs: this.deps.config.limits.testCommandTimeoutMs,
         maxOutputBytes: this.deps.config.limits.maxAgentOutputBytes,
         onOutput: (chunk) => {
@@ -288,6 +513,7 @@ export class JobPipeline {
           });
         },
       });
+      this.deps.repos.jobs.update(jobId, { activePgid: handle.pgid ?? null });
       const onAbort = () => handle.cancel();
       signal.addEventListener('abort', onAbort, { once: true });
       let result;
@@ -295,6 +521,7 @@ export class JobPipeline {
         result = await handle.result;
       } finally {
         signal.removeEventListener('abort', onAbort);
+        this.deps.repos.jobs.update(jobId, { activePgid: null });
       }
 
       const status = result.timedOut
@@ -310,19 +537,37 @@ export class JobPipeline {
         stdout: result.stdout,
         stderr: result.stderr,
         durationMs: result.durationMs,
+        outputTruncated: result.truncated,
         finishedAt: new Date().toISOString(),
       });
       this.deps.publisher.emit('test.completed', jobId, { testRun: finished });
-
       if (signal.aborted) throw new PipelineAbort(abortReasonOf(signal));
+      if (result.exitCode === null && !result.timedOut && !result.canceled) {
+        throw new NeedsHumanOutcome(
+          `Prüfung '${key}' konnte nicht gestartet werden. Sandbox Runtime installiert (` +
+            `SRT_BIN) oder Trusted-Modus bewusst aktiviert?`,
+        );
+      }
+      if (result.truncated) {
+        throw new NeedsHumanOutcome(`Ausgabe der Prüfung '${key}' wurde gekappt`);
+      }
+      const afterHead = await this.deps.git.currentHead(worktree);
+      if (afterHead !== beforeHead) {
+        throw new NeedsHumanOutcome(`Prüfung '${key}' hat die Git-Historie verändert`);
+      }
+      if (await this.deps.git.hasUncommittedChanges(worktree)) {
+        throw new NeedsHumanOutcome(
+          `Prüfung '${key}' hat den Worktree verändert; verwende einen rein prüfenden Befehl`,
+        );
+      }
+      this.verifyOwner(jobId, project);
       if (result.exitCode !== 0) {
+        allOk = false;
         this.system(jobId, `Prüfung '${key}' fehlgeschlagen (Exit ${result.exitCode ?? 'n/a'})`);
         log.warn({ commandKey: key, exitCode: result.exitCode }, 'Pflichtprüfung fehlgeschlagen');
-        return false;
       }
     }
-    this.system(jobId, 'Alle Pflichtprüfungen bestanden');
-    return true;
+    return allOk;
   }
 
   private async reviewPhase(
@@ -332,22 +577,29 @@ export class JobPipeline {
     iteration: number,
     signal: AbortSignal,
     log: Logger,
-  ): Promise<'PASS' | 'FAIL'> {
+  ): Promise<ReviewResult> {
     const job = this.mustJob(jobId);
     const worktree = this.worktree(job);
-    const diff = await this.deps.git.diffAgainstBase(worktree, project.baseBranch);
-    const changed = await this.deps.git.changedFiles(worktree, project.baseBranch);
-    // Diff als Artefakt sichern, damit die UI ihn anzeigen kann.
+    const base = this.baseCommit(job);
+    const diff = await this.deps.git.diffAgainstBase(worktree, base);
+    const changed = await this.deps.git.changedFiles(worktree, base);
     this.deps.repos.artifacts.insert({ jobId, type: 'diff', content: diff });
-    const plan =
-      this.deps.repos.artifacts.latestByType(jobId, 'plan')?.content ?? '(kein Plan gefunden)';
-    const testReport = this.buildTestReport(jobId, iteration);
+    const plan = this.deps.repos.artifacts.latestByType(jobId, 'plan')?.content ?? '(kein Plan)';
+    const implementationSummary =
+      this.deps.repos.artifacts.latestByType(jobId, 'implementation')?.content ?? '(kein Bericht)';
     const prompt = buildReviewPrompt({
       ticket,
       plan,
       diff,
-      changedFiles: changed.map((c) => `${c.status}\t${c.path}`).join('\n'),
-      testReport,
+      changedFiles: changed
+        .map((entry) =>
+          entry.previousPath
+            ? `${entry.status}\t${entry.previousPath} → ${entry.path}`
+            : `${entry.status}\t${entry.path}`,
+        )
+        .join('\n'),
+      testReport: this.buildTestReport(jobId, iteration),
+      implementationSummary,
       iteration,
     });
     const result = await this.runAgent(
@@ -358,53 +610,122 @@ export class JobPipeline {
     if (result.status !== 'completed') {
       throw new NeedsHumanOutcome(`Review nicht durchführbar: ${result.error ?? 'unbekannt'}`);
     }
-    const verdict = parseVerdict(result.output);
-    if (verdict === null) {
-      throw new NeedsHumanOutcome('Review-Ausgabe enthält kein eindeutiges VERDICT: PASS|FAIL');
+    if (result.truncated) throw new NeedsHumanOutcome('Review-Ausgabe wurde gekappt');
+    let review: ReviewResult;
+    try {
+      review = parseReviewResult(result.output);
+    } catch (error) {
+      throw new NeedsHumanOutcome(error instanceof Error ? error.message : String(error));
     }
-    if (verdict === 'FAIL') {
-      await this.writeArtifactFile(job, 'REVIEW.md', result.output);
-      const artifact = this.recordArtifact(
-        jobId,
-        result.runId,
-        'review',
-        path.join(worktree, AGENT_DIR, 'REVIEW.md'),
-        result.output,
-      );
-      this.deps.repos.reviewIterations.insert({
-        jobId,
-        iteration,
-        verdict: 'FAIL',
-        artifactId: artifact.id,
-      });
-      this.deps.publisher.record({
-        type: 'review.failed',
-        jobId,
-        payload: { iteration },
-        message: `Review-Iteration ${iteration}: FAIL`,
-      });
-      log.info({ iteration }, 'Review FAIL');
-      return 'FAIL';
-    }
-    this.recordArtifact(jobId, result.runId, 'review', null, result.output);
-    this.deps.repos.reviewIterations.insert({ jobId, iteration, verdict: 'PASS' });
+    const markdown = renderReviewMarkdown(review);
+    if (review.verdict === 'FAIL') await this.writeArtifactFile(job, 'REVIEW.md', markdown);
+    const artifact = this.recordArtifact(
+      jobId,
+      result.runId,
+      'review',
+      review.verdict === 'FAIL' ? path.join(worktree, AGENT_DIR, 'REVIEW.md') : null,
+      markdown,
+    );
+    this.deps.repos.reviewIterations.insert({
+      jobId,
+      iteration,
+      verdict: review.verdict,
+      artifactId: artifact.id,
+    });
     this.deps.publisher.record({
-      type: 'review.passed',
+      type: review.verdict === 'PASS' ? 'review.passed' : 'review.failed',
       jobId,
       payload: { iteration },
-      message: `Review-Iteration ${iteration}: PASS`,
+      message: `Review-Iteration ${iteration}: ${review.verdict}`,
     });
-    log.info({ iteration }, 'Review PASS');
-    return 'PASS';
+    log.info({ iteration, verdict: review.verdict }, `Review ${review.verdict}`);
+    return review;
   }
 
-  // ---- Agenten-Hilfen -------------------------------------------------------
+  private async completeForHandoff(jobId: string, ticket: Ticket, project: Project): Promise<void> {
+    const job = this.mustJob(jobId);
+    const worktree = this.worktree(job);
+    const base = this.baseCommit(job);
+    await this.deps.git.assertWorktreeClean(worktree);
+    this.verifyOwner(jobId, project);
+    const head = await this.deps.git.currentHead(worktree);
+    const currentBase = await this.deps.git.resolveCommit(project.repositoryPath, job.baseBranch);
+    const stale = currentBase !== base;
+    const diffStat = await this.deps.git.diffStat(worktree, base);
+    this.deps.repos.jobs.update(jobId, { headCommitSha: head, baseStale: stale });
+    const handoff = [
+      '# Menschliche Übergabe',
+      `- Ticket: ${ticket.identifier} — ${ticket.title}`,
+      `- Branch: \`${job.branch ?? '—'}\``,
+      `- Basisbranch: \`${job.baseBranch}\``,
+      `- Basis-Commit: \`${base}\``,
+      `- Head-Commit: \`${head}\``,
+      `- Basisbranch aktuell: \`${currentBase}\``,
+      `- Basis veraltet: **${stale ? 'ja' : 'nein'}**`,
+      '',
+      '## Diffstat',
+      '```text',
+      diffStat.trim() || '(leer)',
+      '```',
+      '',
+      '## Verifikation',
+      this.buildTestReport(jobId, this.mustJob(jobId).reviewLoopCount + 1),
+      '',
+      'Kein Push und kein Merge wurden ausgeführt. Repository und Branch müssen separat gesichert werden;',
+      `optional: \`git -C "${project.repositoryPath}" bundle create <backup>.bundle ${job.branch ?? ''}\``,
+    ].join('\n');
+    this.recordArtifact(jobId, null, 'handoff', null, handoff);
+    if (stale) {
+      await this.finishNeedsHuman(
+        jobId,
+        'Basisbranch hat sich während des Jobs verändert; Branch vor Übergabe manuell aktualisieren',
+        null,
+      );
+      return;
+    }
+    const current = this.mustJob(jobId);
+    assertTransition(current.state, 'ready_for_human');
+    this.deps.repos.jobs.update(jobId, {
+      state: 'ready_for_human',
+      finishedAt: new Date().toISOString(),
+      currentAgent: null,
+      activePgid: null,
+      resumePhase: null,
+      lastError: null,
+    });
+    this.publishStateChange(
+      jobId,
+      current.state,
+      'ready_for_human',
+      'Review bestanden — bereit zur menschlichen Übergabe (kein Merge/Push)',
+    );
+    const summary = this.deps.repos.jobs.getSummary(jobId);
+    if (summary) {
+      this.deps.publisher.record({ type: 'job.ready_for_human', jobId, payload: { job: summary } });
+    }
+    if (this.deps.linear.commentsEnabled) {
+      try {
+        await this.deps.linear.postComment(
+          ticket.linearIssueId,
+          `Lokale Agentenarbeit für ${ticket.identifier} ist zur menschlichen Übergabe bereit.`,
+        );
+      } catch (error) {
+        this.deps.logger.warn({ err: error, jobId }, 'Linear-Kommentar fehlgeschlagen');
+      }
+    }
+  }
 
   private async runAgent(
     input: { jobId: string; phase: AgentPhase; agent: AgentName; prompt: string; cwd: string },
     adapter: ClaudeCodeAdapter | CodexCliAdapter,
     signal: AbortSignal,
-  ): Promise<{ runId: string; status: string; output: string; error: string | null }> {
+  ): Promise<{
+    runId: string;
+    status: string;
+    output: string;
+    error: string | null;
+    truncated: boolean;
+  }> {
     const { repos, publisher, logStore, config } = this.deps;
     if (signal.aborted) throw new PipelineAbort(abortReasonOf(signal));
     const run = repos.agentRuns.insert({
@@ -419,7 +740,6 @@ export class JobPipeline {
       payload: { runId: run.id, agent: input.agent, phase: input.phase },
       message: `${input.agent} (${input.phase}) gestartet`,
     });
-
     const onAbort = () => void adapter.cancel(run.id);
     signal.addEventListener('abort', onAbort, { once: true });
     try {
@@ -453,33 +773,32 @@ export class JobPipeline {
         status: result.status,
         exitCode: result.exitCode,
         output: result.output,
+        outputTruncated: result.truncated,
         error: result.error,
         finishedAt: new Date().toISOString(),
       });
       repos.jobs.update(input.jobId, { currentAgent: null, activePgid: null });
-      if (result.status === 'completed') {
-        publisher.record({
-          type: 'agent.completed',
-          jobId: input.jobId,
-          payload: { runId: run.id, status: result.status, exitCode: result.exitCode },
-          message: `${input.agent} (${input.phase}) abgeschlossen`,
-        });
-      } else {
-        publisher.record({
-          type: 'agent.failed',
-          jobId: input.jobId,
-          payload: { runId: run.id, status: result.status, error: result.error ?? 'unbekannt' },
-          message: `${input.agent} (${input.phase}): ${result.status}`,
-        });
-      }
+      publisher.record({
+        type: result.status === 'completed' ? 'agent.completed' : 'agent.failed',
+        jobId: input.jobId,
+        payload:
+          result.status === 'completed'
+            ? { runId: run.id, status: result.status, exitCode: result.exitCode }
+            : { runId: run.id, status: result.status, error: result.error ?? 'unbekannt' },
+        message: `${input.agent} (${input.phase}): ${result.status}`,
+      });
       if (signal.aborted) throw new PipelineAbort(abortReasonOf(signal));
-      return { runId: run.id, status: result.status, output: result.output, error: result.error };
+      return {
+        runId: run.id,
+        status: result.status,
+        output: result.output,
+        error: result.error,
+        truncated: result.truncated,
+      };
     } finally {
       signal.removeEventListener('abort', onAbort);
     }
   }
-
-  // ---- Zustandswechsel & Ausgänge ------------------------------------------
 
   private async transition(jobId: string, to: JobState, message: string): Promise<Job> {
     const job = this.mustJob(jobId);
@@ -493,7 +812,11 @@ export class JobPipeline {
     const job = this.mustJob(jobId);
     assertTransition(job.state, 'rework');
     const count = job.reviewLoopCount + 1;
-    this.deps.repos.jobs.update(jobId, { state: 'rework', reviewLoopCount: count });
+    this.deps.repos.jobs.update(jobId, {
+      state: 'rework',
+      reviewLoopCount: count,
+      resumePhase: 'implementing',
+    });
     this.publishStateChange(
       jobId,
       job.state,
@@ -502,53 +825,27 @@ export class JobPipeline {
     );
   }
 
-  private async finishDone(jobId: string, ticket: Ticket): Promise<void> {
-    const job = this.mustJob(jobId);
-    assertTransition(job.state, 'done');
-    this.deps.repos.jobs.update(jobId, {
-      state: 'done',
-      finishedAt: new Date().toISOString(),
-      currentAgent: null,
-      activePgid: null,
-      lastError: null,
-    });
-    this.publishStateChange(
-      jobId,
-      job.state,
-      'done',
-      'Review bestanden — fertig (kein automatischer Merge/Push)',
-    );
-    const summary = this.deps.repos.jobs.getSummary(jobId);
-    if (summary)
-      this.deps.publisher.record({ type: 'job.completed', jobId, payload: { job: summary } });
-    if (this.deps.linear.commentsEnabled) {
-      try {
-        await this.deps.linear.postComment(
-          ticket.linearIssueId,
-          `Lokaler Agent-Workflow abgeschlossen für ${ticket.identifier} (Review bestanden).`,
-        );
-      } catch (error) {
-        this.deps.logger.warn({ err: error, jobId }, 'Linear-Kommentar fehlgeschlagen');
-      }
-    }
-  }
-
-  private async finishNeedsHuman(jobId: string, reason: string): Promise<void> {
+  private async finishNeedsHuman(
+    jobId: string,
+    reason: string,
+    resumePhase: PipelinePhase | null = null,
+  ): Promise<void> {
     const job = this.mustJob(jobId);
     assertTransition(job.state, 'needs_human');
     this.deps.repos.jobs.update(jobId, {
       state: 'needs_human',
       lastError: reason,
+      finishedAt: new Date().toISOString(),
       currentAgent: null,
       activePgid: null,
+      resumePhase,
     });
     this.publishStateChange(jobId, job.state, 'needs_human', reason);
   }
 
   private async fail(jobId: string, message: string): Promise<void> {
     const job = this.deps.repos.jobs.get(jobId);
-    if (!job) return;
-    if (job.state === 'done') return;
+    if (!job || job.state === 'done' || job.state === 'ready_for_human') return;
     try {
       assertTransition(job.state, 'failed');
     } catch {
@@ -564,51 +861,48 @@ export class JobPipeline {
     });
     this.publishStateChange(jobId, job.state, 'failed', message);
     const summary = this.deps.repos.jobs.getSummary(jobId);
-    if (summary)
+    if (summary) {
       this.deps.publisher.record({
         type: 'job.failed',
         jobId,
         payload: { job: summary, error: message },
       });
+    }
   }
 
-  /** Vom Queue-Manager aufgerufen, wenn ein Lauf abgebrochen wurde. */
   async abortToFailed(jobId: string, message: string): Promise<void> {
     await this.fail(jobId, message);
   }
 
-  // ---- Grenzen (Pause/Cancel) ----------------------------------------------
-
-  /** true, wenn die Pipeline anhalten soll (Pause-Request). Wirft bei Abbruch. */
-  private async boundary(jobId: string, signal: AbortSignal): Promise<boolean> {
+  private async boundary(
+    jobId: string,
+    signal: AbortSignal,
+    nextPhase: PipelinePhase,
+  ): Promise<boolean> {
     if (signal.aborted) throw new PipelineAbort(abortReasonOf(signal));
     const job = this.mustJob(jobId);
-    if (job.pauseRequested) {
-      assertTransition(job.state, 'paused');
-      this.deps.repos.jobs.update(jobId, {
-        state: 'paused',
-        pauseRequested: false,
-        currentAgent: null,
-        activePgid: null,
-      });
-      this.publishStateChange(jobId, job.state, 'paused', 'Pausiert auf Benutzerwunsch');
-      const summary = this.deps.repos.jobs.getSummary(jobId);
-      if (summary)
-        this.deps.publisher.record({ type: 'job.paused', jobId, payload: { job: summary } });
-      return true;
-    }
-    return false;
+    if (!job.pauseRequested) return false;
+    assertTransition(job.state, 'paused');
+    this.deps.repos.jobs.update(jobId, {
+      state: 'paused',
+      pauseRequested: false,
+      currentAgent: null,
+      activePgid: null,
+      resumePhase: nextPhase,
+    });
+    this.publishStateChange(jobId, job.state, 'paused', `Pausiert vor Phase ${nextPhase}`);
+    const summary = this.deps.repos.jobs.getSummary(jobId);
+    if (summary)
+      this.deps.publisher.record({ type: 'job.paused', jobId, payload: { job: summary } });
+    return true;
   }
-
-  // ---- kleine Helfer --------------------------------------------------------
 
   private load(jobId: string): { project: Project; ticket: Ticket } | null {
     const job = this.deps.repos.jobs.get(jobId);
     if (!job) return null;
     const project = this.deps.repos.projects.get(job.projectId);
     const ticket = this.deps.repos.tickets.get(job.ticketId);
-    if (!project || !ticket) return null;
-    return { project, ticket };
+    return project && ticket ? { project, ticket } : null;
   }
 
   private mustJob(jobId: string): Job {
@@ -622,6 +916,42 @@ export class JobPipeline {
     return job.worktreePath;
   }
 
+  private baseCommit(job: Job): string {
+    if (!job.baseCommitSha) throw new Error('Basis-Commit nicht gesetzt');
+    return job.baseCommitSha;
+  }
+
+  private resumePhaseForState(job: Job): PipelinePhase | null {
+    switch (job.state) {
+      case 'agent_ready':
+        return job.resumePhase ?? 'preflight';
+      case 'preflight':
+        return 'preflight';
+      case 'planning':
+        return 'planning';
+      case 'implementing':
+      case 'rework':
+        return 'implementing';
+      case 'testing':
+        return 'testing';
+      case 'review':
+        return 'review';
+      default:
+        return null;
+    }
+  }
+
+  private verifyOwner(jobId: string, project: Project): void {
+    const job = this.mustJob(jobId);
+    if (!job.branch) throw new Error('Branch nicht gesetzt');
+    this.deps.git.verifyOwner(this.worktree(job), {
+      jobId,
+      branch: job.branch,
+      repositoryPath: project.repositoryPath,
+      baseCommit: this.baseCommit(job),
+    });
+  }
+
   private async writeArtifactFile(job: Job, name: string, content: string): Promise<void> {
     const dir = path.join(this.worktree(job), AGENT_DIR);
     await fs.mkdir(dir, { recursive: true });
@@ -630,8 +960,8 @@ export class JobPipeline {
 
   private recordArtifact(
     jobId: string,
-    agentRunId: string,
-    type: 'plan' | 'review' | 'summary' | 'diff' | 'test_report',
+    agentRunId: string | null,
+    type: ArtifactType,
     filePath: string | null,
     content: string,
   ) {
@@ -660,15 +990,19 @@ export class JobPipeline {
   }
 
   private buildTestReport(jobId: string, iteration: number): string {
-    const runs = this.deps.repos.testRuns.listByJob(jobId).filter((r) => r.iteration === iteration);
+    const runs = this.deps.repos.testRuns
+      .listByJob(jobId)
+      .filter((run) => run.iteration === iteration);
     if (runs.length === 0) return '(keine Testläufe)';
     return runs
-      .map((r) => {
-        const head = `## ${r.commandKey}: ${r.command} → Exit ${r.exitCode ?? 'n/a'} (${r.status})`;
-        const body = [r.stdout, r.stderr]
-          .filter((s) => s.trim().length > 0)
+      .map((run) => {
+        const mode = run.sandboxed ? 'sandboxed' : 'trusted-host';
+        const phase = run.baseline ? 'Baseline' : `Iteration ${iteration}`;
+        const head = `## ${phase} · ${run.commandKey}: ${run.command} → Exit ${run.exitCode ?? 'n/a'} (${run.status}, ${mode})`;
+        const body = [run.stdout, run.stderr]
+          .filter((value) => value.trim().length > 0)
           .join('\n')
-          .slice(-4000);
+          .slice(-4_000);
         return `${head}\n${body}`;
       })
       .join('\n\n');

@@ -10,3 +10,5 @@ data/
 *.log
 .eslintcache
 .vite/
+/.claude/settings.local.json
+/.tokensave/

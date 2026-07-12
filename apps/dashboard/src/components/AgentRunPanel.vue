@@ -20,6 +20,7 @@ function duration(run: AgentRun): string {
         <span class="status" :class="run.status">{{ run.status }}</span>
         <span class="faint">Exit {{ run.exitCode ?? '—' }}</span>
         <span class="faint">{{ duration(run) }}</span>
+        <span v-if="run.outputTruncated" class="truncated">Ausgabe gekürzt</span>
       </div>
       <div class="ts faint">{{ formatDateTime(run.startedAt) }}</div>
       <pre v-if="run.error" class="err">{{ run.error }}</pre>
@@ -66,6 +67,10 @@ function duration(run: AgentRun): string {
 }
 .status.canceled {
   color: var(--text-dim);
+}
+.truncated {
+  color: var(--c-warn);
+  font-size: 11px;
 }
 .ts {
   font-size: 11px;

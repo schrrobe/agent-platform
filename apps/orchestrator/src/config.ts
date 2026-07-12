@@ -30,6 +30,7 @@ const envSchema = z.object({
 
   CLAUDE_BIN: z.string().default('claude'),
   CODEX_BIN: z.string().default('codex'),
+  SRT_BIN: z.string().default('srt'),
   CLAUDE_MODEL: z.string().optional().default(''),
   CODEX_MODEL: z.string().optional().default(''),
   CLAUDE_MAX_BUDGET_USD: z.coerce.number().positive().optional(),
@@ -64,6 +65,7 @@ export interface AppConfig {
   agents: {
     claudeBin: string;
     codexBin: string;
+    srtBin: string;
     claudeModel: string | undefined;
     codexModel: string | undefined;
     claudeMaxBudgetUsd: number | undefined;
@@ -132,6 +134,7 @@ export function loadConfig(source: NodeJS.ProcessEnv = process.env): AppConfig {
     agents: {
       claudeBin: env.CLAUDE_BIN,
       codexBin: env.CODEX_BIN,
+      srtBin: env.SRT_BIN,
       claudeModel: env.CLAUDE_MODEL || undefined,
       codexModel: env.CODEX_MODEL || undefined,
       claudeMaxBudgetUsd: env.CLAUDE_MAX_BUDGET_USD,

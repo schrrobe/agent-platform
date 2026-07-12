@@ -20,6 +20,8 @@ interface RunningEntry {
 export class JobQueue {
   private readonly running = new Map<string, RunningEntry>();
   private readonly waiting: string[] = [];
+  private readonly rerunRequested = new Set<string>();
+  private stopping = false;
 
   constructor(
     private readonly deps: {
@@ -35,7 +37,9 @@ export class JobQueue {
   }
 
   isQueued(jobId: string): boolean {
-    return this.running.has(jobId) || this.waiting.includes(jobId);
+    return (
+      this.running.has(jobId) || this.waiting.includes(jobId) || this.rerunRequested.has(jobId)
+    );
   }
 
   runningJobIds(): string[] {
@@ -44,9 +48,20 @@ export class JobQueue {
 
   /** Reiht einen Job zur Ausführung ein (idempotent). */
   enqueue(jobId: string): void {
-    if (this.isQueued(jobId)) return;
+    if (this.stopping) return;
+    if (this.running.has(jobId) || this.waiting.includes(jobId)) return;
     this.waiting.push(jobId);
     this.pump();
+  }
+
+  /** Plant einen Checkpoint-Fortlauf auch dann, wenn der aktuelle Lauf gerade ausläuft. */
+  enqueueAfterCurrent(jobId: string): void {
+    if (this.stopping) return;
+    if (this.running.has(jobId)) {
+      this.rerunRequested.add(jobId);
+      return;
+    }
+    this.enqueue(jobId);
   }
 
   /** Bricht einen laufenden Job hart ab (Prozessgruppe wird gekillt). */
@@ -56,8 +71,10 @@ export class JobQueue {
       // Noch nicht gestartet: aus der Warteschlange nehmen.
       const idx = this.waiting.indexOf(jobId);
       if (idx >= 0) this.waiting.splice(idx, 1);
+      this.rerunRequested.delete(jobId);
       return idx >= 0;
     }
+    this.rerunRequested.delete(jobId);
     const reason: AbortReason = { type: 'cancel', message: 'Vom Benutzer abgebrochen' };
     entry.controller.abort(reason);
     return true;
@@ -71,6 +88,7 @@ export class JobQueue {
   }
 
   private pump(): void {
+    if (this.stopping) return;
     if (this.running.size >= this.deps.config.limits.maxConcurrentJobs) return;
     const idx = this.waiting.findIndex((jobId) => {
       const job = this.deps.repos.jobs.get(jobId);
@@ -121,6 +139,9 @@ export class JobQueue {
       .finally(() => {
         clearTimeout(deadlineTimer);
         this.running.delete(jobId);
+        if (this.rerunRequested.delete(jobId) && !this.waiting.includes(jobId)) {
+          this.waiting.push(jobId);
+        }
         log.info('Job beendet');
         this.pump();
       });
@@ -128,6 +149,9 @@ export class JobQueue {
 
   /** Bei Shutdown: alle laufenden Jobs abbrechen. */
   abortAll(reason: string): void {
+    this.stopping = true;
+    this.waiting.length = 0;
+    this.rerunRequested.clear();
     for (const entry of this.running.values()) {
       entry.controller.abort({ type: 'cancel', message: reason } satisfies AbortReason);
     }

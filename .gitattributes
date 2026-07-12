@@ -1,0 +1,3 @@
+# Die Vorgängerversion enthielt ein literales NUL im Regex; als Text erzwingen,
+# damit die Sicherheits-Schemaänderung reviewbar bleibt.
+packages/shared/src/schemas.ts text diff

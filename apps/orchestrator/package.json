@@ -21,6 +21,7 @@
     "@agent/linear": "workspace:*",
     "@agent/shared": "workspace:*",
     "@agent/workflow": "workspace:*",
+    "@anthropic-ai/sandbox-runtime": "catalog:",
     "@fastify/cors": "catalog:",
     "@fastify/static": "catalog:",
     "@fastify/websocket": "catalog:",

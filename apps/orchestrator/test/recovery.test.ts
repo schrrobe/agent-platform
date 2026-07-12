@@ -25,6 +25,13 @@ describe('Neustart-Recovery', () => {
     });
     // PGID einer garantiert nicht existierenden Prozessgruppe (kill wirft ESRCH → toleriert).
     harness.ctx.repos.agentRuns.update(run.id, { pgid: 2_147_483_600 });
+    harness.ctx.repos.jobs.update(job.id, { activePgid: 2_147_483_599 });
+    const testRun = harness.ctx.repos.testRuns.insert({
+      jobId: job.id,
+      iteration: 1,
+      commandKey: 'test',
+      command: 'pnpm test',
+    });
 
     const result = runRecovery(harness.ctx);
     expect(result.failedJobs).toBe(1);
@@ -36,6 +43,7 @@ describe('Neustart-Recovery', () => {
 
     const runs = harness.ctx.repos.agentRuns.listByJob(job.id);
     expect(runs[0]?.status).toBe('canceled');
+    expect(harness.ctx.repos.testRuns.get(testRun.id)?.status).toBe('canceled');
   });
 
   it('lässt terminale und inaktive Jobs unangetastet', async () => {

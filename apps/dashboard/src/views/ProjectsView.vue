@@ -75,6 +75,11 @@ async function confirmDelete(): Promise<void> {
           </div>
           <code class="path">{{ project.repositoryPath }}</code>
           <div class="cmds faint">{{ commandsSummary(project) }}</div>
+          <div class="cmds faint">
+            {{ project.autonomyMode }} · Tests: {{ project.testExecutionMode }} · Baseline:
+            {{ project.baselineChecks ? 'an' : 'aus' }} · Diff-Limit:
+            {{ project.maxChangedFiles }} Dateien
+          </div>
         </div>
         <div class="controls">
           <button @click="editing = project">Bearbeiten</button>

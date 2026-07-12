@@ -80,6 +80,11 @@ export const api = {
     request<{ job: JobSummary }>(`/api/jobs/${id}/pause`, { method: 'POST' }).then((r) => r.job),
   retryJob: (id: string) =>
     request<{ job: JobSummary }>(`/api/jobs/${id}/retry`, { method: 'POST' }).then((r) => r.job),
+  approvePlan: (id: string, note = '') =>
+    request<{ job: JobSummary }>(`/api/jobs/${id}/approve-plan`, {
+      method: 'POST',
+      body: JSON.stringify({ note }),
+    }).then((r) => r.job),
   cancelJob: (id: string) =>
     request<{ job: JobSummary }>(`/api/jobs/${id}/cancel`, { method: 'POST' }).then((r) => r.job),
   patchState: (id: string, state: JobState) =>

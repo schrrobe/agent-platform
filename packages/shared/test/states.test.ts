@@ -29,14 +29,16 @@ describe('TRANSITIONS', () => {
     expect(MANUAL_TRANSITIONS.done).toHaveLength(0);
   });
 
-  it('erlaubt den Kernpfad inbox → … → done', () => {
+  it('erlaubt den Kernpfad inbox → … → menschliche Übergabe → done', () => {
     const path = [
       'inbox',
       'agent_ready',
+      'preflight',
       'planning',
       'implementing',
       'testing',
       'review',
+      'ready_for_human',
       'done',
     ] as const;
     for (let i = 0; i < path.length - 1; i += 1) {

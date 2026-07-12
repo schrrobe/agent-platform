@@ -1,4 +1,4 @@
-import type { Project, ProjectCommands } from '@agent/shared';
+import type { AutonomyMode, Project, ProjectCommands, TestExecutionMode } from '@agent/shared';
 import type { AppDatabase } from '../db.js';
 import { newId, nowIso, parseJson, toBool, toInt } from '../util.js';
 
@@ -9,6 +9,12 @@ export interface ProjectRow {
   base_branch: string;
   worktree_root: string;
   commands_json: string;
+  autonomy_mode: string;
+  test_execution_mode: string;
+  baseline_checks: number;
+  max_changed_files: number;
+  max_diff_bytes: number;
+  blocked_paths_json: string;
   active: number;
   created_at: string;
   updated_at: string;
@@ -22,6 +28,12 @@ export function mapProject(row: ProjectRow): Project {
     baseBranch: row.base_branch,
     worktreeRoot: row.worktree_root,
     commands: parseJson<ProjectCommands>(row.commands_json, {}),
+    autonomyMode: row.autonomy_mode as AutonomyMode,
+    testExecutionMode: row.test_execution_mode as TestExecutionMode,
+    baselineChecks: toBool(row.baseline_checks),
+    maxChangedFiles: row.max_changed_files,
+    maxDiffBytes: row.max_diff_bytes,
+    blockedPaths: parseJson<string[]>(row.blocked_paths_json, []),
     active: toBool(row.active),
     createdAt: row.created_at,
     updatedAt: row.updated_at,
@@ -34,6 +46,12 @@ export interface ProjectCreate {
   baseBranch: string;
   worktreeRoot: string;
   commands: ProjectCommands;
+  autonomyMode: AutonomyMode;
+  testExecutionMode: TestExecutionMode;
+  baselineChecks: boolean;
+  maxChangedFiles: number;
+  maxDiffBytes: number;
+  blockedPaths: string[];
   active: boolean;
 }
 
@@ -48,8 +66,10 @@ export class ProjectsRepository {
     this.db
       .prepare(
         `INSERT INTO projects
-          (id, name, repository_path, base_branch, worktree_root, commands_json, active, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          (id, name, repository_path, base_branch, worktree_root, commands_json,
+           autonomy_mode, test_execution_mode, baseline_checks, max_changed_files,
+           max_diff_bytes, blocked_paths_json, active, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       )
       .run(
         id,
@@ -58,6 +78,12 @@ export class ProjectsRepository {
         input.baseBranch,
         input.worktreeRoot,
         JSON.stringify(input.commands),
+        input.autonomyMode,
+        input.testExecutionMode,
+        toInt(input.baselineChecks),
+        input.maxChangedFiles,
+        input.maxDiffBytes,
+        JSON.stringify(input.blockedPaths),
         toInt(input.active),
         now,
         now,
@@ -76,12 +102,20 @@ export class ProjectsRepository {
       baseBranch: patch.baseBranch ?? current.baseBranch,
       worktreeRoot: patch.worktreeRoot ?? current.worktreeRoot,
       commands: patch.commands ?? current.commands,
+      autonomyMode: patch.autonomyMode ?? current.autonomyMode,
+      testExecutionMode: patch.testExecutionMode ?? current.testExecutionMode,
+      baselineChecks: patch.baselineChecks ?? current.baselineChecks,
+      maxChangedFiles: patch.maxChangedFiles ?? current.maxChangedFiles,
+      maxDiffBytes: patch.maxDiffBytes ?? current.maxDiffBytes,
+      blockedPaths: patch.blockedPaths ?? current.blockedPaths,
       active: patch.active ?? current.active,
     };
     this.db
       .prepare(
         `UPDATE projects SET name = ?, repository_path = ?, base_branch = ?, worktree_root = ?,
-          commands_json = ?, active = ?, updated_at = ? WHERE id = ?`,
+          commands_json = ?, autonomy_mode = ?, test_execution_mode = ?, baseline_checks = ?,
+          max_changed_files = ?, max_diff_bytes = ?, blocked_paths_json = ?, active = ?,
+          updated_at = ? WHERE id = ?`,
       )
       .run(
         merged.name,
@@ -89,6 +123,12 @@ export class ProjectsRepository {
         merged.baseBranch,
         merged.worktreeRoot,
         JSON.stringify(merged.commands),
+        merged.autonomyMode,
+        merged.testExecutionMode,
+        toInt(merged.baselineChecks),
+        merged.maxChangedFiles,
+        merged.maxDiffBytes,
+        JSON.stringify(merged.blockedPaths),
         toInt(merged.active),
         nowIso(),
         id,

@@ -38,7 +38,7 @@ describe('WebSocket-Hub', () => {
     const { socket, events } = await connect(harness);
     const job = harness.seedJob('APP-301');
     await harness.ctx.jobs.start(job.id);
-    await harness.waitForState(job.id, ['done']);
+    await harness.waitForState(job.id, ['ready_for_human']);
     await new Promise((r) => setTimeout(r, 50));
 
     const types = events.map((e) => e.type);

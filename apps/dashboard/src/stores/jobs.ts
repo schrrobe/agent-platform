@@ -47,6 +47,7 @@ export const useJobsStore = defineStore('jobs', () => {
       case 'job.created':
       case 'job.updated':
       case 'job.started':
+      case 'job.ready_for_human':
       case 'job.completed':
       case 'job.paused':
         upsert(envelope.payload.job);

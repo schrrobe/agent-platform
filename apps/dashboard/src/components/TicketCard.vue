@@ -18,7 +18,9 @@ useDraggableCard(
 
 const now = useClock();
 const isActive = computed(() =>
-  ['planning', 'implementing', 'testing', 'review', 'rework'].includes(props.job.state),
+  ['preflight', 'planning', 'implementing', 'testing', 'review', 'rework'].includes(
+    props.job.state,
+  ),
 );
 const runtime = computed(() =>
   formatDuration(runtimeMs(props.job.startedAt, props.job.finishedAt, now.value)),

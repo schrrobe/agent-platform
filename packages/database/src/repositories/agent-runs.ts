@@ -11,6 +11,7 @@ export interface AgentRunRow {
   pgid: number | null;
   exit_code: number | null;
   output: string | null;
+  output_truncated: number;
   error: string | null;
   started_at: string;
   finished_at: string | null;
@@ -25,6 +26,7 @@ function mapAgentRun(row: AgentRunRow): AgentRun {
     status: row.status as RunStatus,
     exitCode: row.exit_code,
     output: row.output,
+    outputTruncated: row.output_truncated === 1,
     error: row.error,
     startedAt: row.started_at,
     finishedAt: row.finished_at,
@@ -36,6 +38,7 @@ export interface AgentRunPatch {
   pgid?: number | null;
   exitCode?: number | null;
   output?: string | null;
+  outputTruncated?: boolean;
   error?: string | null;
   finishedAt?: string | null;
 }
@@ -68,6 +71,7 @@ export class AgentRunsRepository {
       pgid: 'pgid',
       exitCode: 'exit_code',
       output: 'output',
+      outputTruncated: 'output_truncated',
       error: 'error',
       finishedAt: 'finished_at',
     };
@@ -78,7 +82,10 @@ export class AgentRunsRepository {
       const sets = entries.map(([key]) => `${columns[key]} = ?`).join(', ');
       this.db
         .prepare(`UPDATE agent_runs SET ${sets} WHERE id = ?`)
-        .run(...entries.map(([, value]) => value), id);
+        .run(
+          ...entries.map(([, value]) => (typeof value === 'boolean' ? (value ? 1 : 0) : value)),
+          id,
+        );
     }
     const run = this.get(id);
     if (!run) throw new Error(`AgentRun nicht gefunden: ${id}`);

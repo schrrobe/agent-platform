@@ -20,6 +20,11 @@ function toggle(id: string): void {
         <span class="key">{{ run.commandKey }}</span>
         <code class="cmd">{{ run.command }}</code>
         <span class="it faint">#{{ run.iteration }}</span>
+        <span v-if="run.baseline" class="tag">Baseline</span>
+        <span class="tag" :class="{ warn: !run.sandboxed }">
+          {{ run.sandboxed ? 'Sandbox' : 'Trusted' }}
+        </span>
+        <span v-if="run.outputTruncated" class="tag warn">gekürzt</span>
         <span class="status" :class="run.exitCode === 0 ? 'ok' : 'bad'">
           {{ run.exitCode === 0 ? 'OK' : `Exit ${run.exitCode ?? '—'}` }}
         </span>
@@ -69,6 +74,17 @@ function toggle(id: string): void {
 }
 .status.bad {
   color: var(--c-fail);
+}
+.tag {
+  color: var(--text-dim);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  padding: 1px 6px;
+  font-size: 10px;
+  white-space: nowrap;
+}
+.tag.warn {
+  color: var(--c-warn);
 }
 .output {
   padding: 0 11px 11px;

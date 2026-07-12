@@ -150,7 +150,7 @@ export class ProcessExecutor implements ProcessRunner {
         if (remainder.includes('\n')) {
           const lines = remainder.split('\n');
           remainder = lines.pop() ?? '';
-          emit(stream, buf, stripAnsi(lines.join('\n')));
+          for (const line of lines) emit(stream, buf, stripAnsi(line));
         }
         if (remainder.length > MAX_LINE_REMAINDER) {
           emit(stream, buf, stripAnsi(remainder));

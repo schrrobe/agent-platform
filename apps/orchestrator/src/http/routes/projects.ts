@@ -26,6 +26,12 @@ export function registerProjectRoutes(app: FastifyInstance, ctx: AppContext): vo
       baseBranch: input.baseBranch,
       worktreeRoot,
       commands: input.commands,
+      autonomyMode: input.autonomyMode,
+      testExecutionMode: input.testExecutionMode,
+      baselineChecks: input.baselineChecks,
+      maxChangedFiles: input.maxChangedFiles,
+      maxDiffBytes: input.maxDiffBytes,
+      blockedPaths: input.blockedPaths,
       active: input.active,
     });
     reply.code(201);

@@ -12,7 +12,14 @@ const form = reactive({
   baseBranch: props.project?.baseBranch ?? 'main',
   worktreeRoot: props.project?.worktreeRoot ?? '',
   active: props.project?.active ?? true,
+  autonomyMode: props.project?.autonomyMode ?? 'approve_plan',
+  testExecutionMode: props.project?.testExecutionMode ?? 'sandboxed',
+  baselineChecks: props.project?.baselineChecks ?? true,
+  maxChangedFiles: props.project?.maxChangedFiles ?? 100,
+  maxDiffMiB: (props.project?.maxDiffBytes ?? 1024 * 1024) / (1024 * 1024),
+  blockedPaths: props.project?.blockedPaths.join('\n') ?? '',
   commands: {
+    setup: props.project?.commands.setup ?? '',
     format: props.project?.commands.format ?? '',
     lint: props.project?.commands.lint ?? '',
     typecheck: props.project?.commands.typecheck ?? '',
@@ -45,6 +52,15 @@ function submit(): void {
     baseBranch: form.baseBranch.trim() || 'main',
     worktreeRoot: form.worktreeRoot.trim(),
     active: form.active,
+    autonomyMode: form.autonomyMode,
+    testExecutionMode: form.testExecutionMode,
+    baselineChecks: form.baselineChecks,
+    maxChangedFiles: form.maxChangedFiles,
+    maxDiffBytes: Math.round(form.maxDiffMiB * 1024 * 1024),
+    blockedPaths: form.blockedPaths
+      .split('\n')
+      .map((entry) => entry.trim())
+      .filter(Boolean),
     commands,
   });
 }
@@ -72,13 +88,64 @@ function submit(): void {
     </div>
 
     <fieldset>
-      <legend>Projektbefehle (ohne Shell-Metazeichen)</legend>
+      <legend>Autonomie und Sicherheitsgrenzen</legend>
+      <div class="grid">
+        <div class="field">
+          <label>Planfreigabe</label>
+          <select v-model="form.autonomyMode">
+            <option value="approve_plan">Plan immer bestätigen</option>
+            <option value="full_auto">Niedriges Risiko automatisch</option>
+          </select>
+        </div>
+        <div class="field">
+          <label>Projektbefehle ausführen</label>
+          <select v-model="form.testExecutionMode">
+            <option value="sandboxed">OS-Sandbox (empfohlen)</option>
+            <option value="trusted">Trusted Host (nicht isoliert)</option>
+          </select>
+        </div>
+      </div>
+      <p v-if="form.testExecutionMode === 'trusted'" class="warn">
+        Trusted Host führt vom Agenten veränderten Projektcode direkt auf diesem Rechner aus.
+      </p>
+      <label class="check">
+        <input v-model="form.baselineChecks" type="checkbox" style="width: auto" />
+        Prüfungen vor der Implementierung als Baseline ausführen
+      </label>
+      <div class="grid limits">
+        <div class="field">
+          <label>Maximal geänderte Dateien</label>
+          <input v-model.number="form.maxChangedFiles" type="number" min="1" max="10000" />
+        </div>
+        <div class="field">
+          <label>Maximale Diffgröße (MiB)</label>
+          <input v-model.number="form.maxDiffMiB" type="number" min="0.001" max="100" step="0.25" />
+        </div>
+      </div>
+      <div class="field">
+        <label>Gesperrte Repository-Pfade (einer pro Zeile)</label>
+        <textarea
+          v-model="form.blockedPaths"
+          rows="3"
+          placeholder=".github/workflows&#10;infra/production"
+        />
+      </div>
+    </fieldset>
+
+    <fieldset>
+      <legend>Setup und rein prüfende Befehle (ohne Shell-Metazeichen)</legend>
       <div v-for="key in COMMAND_KEYS" :key="key" class="field cmd">
         <label>{{ key }}</label>
         <input
           v-model="form.commands[key]"
           :class="{ invalid: form.commands[key] && SHELL_METACHAR_RE.test(form.commands[key]!) }"
-          :placeholder="`z. B. pnpm ${key}`"
+          :placeholder="
+            key === 'setup'
+              ? 'z. B. pnpm install --offline --frozen-lockfile'
+              : key === 'format'
+                ? 'z. B. pnpm format:check'
+                : `z. B. pnpm ${key}`
+          "
         />
       </div>
       <p v-if="commandErrors.length" class="warn">
@@ -102,6 +169,9 @@ function submit(): void {
   display: grid;
   grid-template-columns: 2fr 1fr;
   gap: 14px;
+}
+.limits {
+  margin-top: 12px;
 }
 fieldset {
   border: 1px solid var(--border);

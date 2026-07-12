@@ -1,6 +1,7 @@
 export * from './env.js';
 export * from './verdict.js';
 export * from './prompts.js';
+export * from './contracts.js';
 export * from './process/executor.js';
 export * from './adapters/base.js';
 export * from './adapters/claude.js';

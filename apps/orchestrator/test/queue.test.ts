@@ -25,10 +25,10 @@ describe('JobQueue', () => {
     // Beide gehören zum selben Projekt → höchstens einer läuft.
     expect(harness.ctx.queue.runningJobIds().length).toBe(1);
 
-    await harness.waitForState(a.id, ['done']);
-    await harness.waitForState(b.id, ['done']);
-    expect(harness.ctx.repos.jobs.get(a.id)!.state).toBe('done');
-    expect(harness.ctx.repos.jobs.get(b.id)!.state).toBe('done');
+    await harness.waitForState(a.id, ['ready_for_human']);
+    await harness.waitForState(b.id, ['ready_for_human']);
+    expect(harness.ctx.repos.jobs.get(a.id)!.state).toBe('ready_for_human');
+    expect(harness.ctx.repos.jobs.get(b.id)!.state).toBe('ready_for_human');
   });
 
   it('enqueue ist idempotent', async () => {
@@ -38,7 +38,7 @@ describe('JobQueue', () => {
     harness.ctx.queue.enqueue(job.id);
     harness.ctx.queue.enqueue(job.id);
     expect(harness.ctx.queue.isQueued(job.id)).toBe(true);
-    await harness.waitForState(job.id, ['done', 'failed', 'needs_human']);
+    await harness.waitForState(job.id, ['ready_for_human', 'failed', 'needs_human']);
   });
 
   it('bricht einen laufenden Job per cancel hart ab (→ failed)', async () => {

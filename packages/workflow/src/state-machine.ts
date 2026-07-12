@@ -59,11 +59,11 @@ export function decideAfterFailedTests(budget: LoopBudget): 'rework' | 'needs_hu
   return hasLoopBudget(budget) ? 'rework' : 'needs_human';
 }
 
-/** Nach dem Claude-Review: PASS → done, FAIL → rework oder needs_human. */
+/** Nach dem Claude-Review: PASS → menschliche Übergabe, sonst Rework/Eskalation. */
 export function decideAfterReview(
   verdict: ReviewVerdict,
   budget: LoopBudget,
-): 'done' | 'rework' | 'needs_human' {
-  if (verdict === 'PASS') return 'done';
+): 'ready_for_human' | 'rework' | 'needs_human' {
+  if (verdict === 'PASS') return 'ready_for_human';
   return hasLoopBudget(budget) ? 'rework' : 'needs_human';
 }

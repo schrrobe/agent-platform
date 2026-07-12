@@ -1,0 +1,18 @@
+ALTER TABLE projects ADD COLUMN autonomy_mode TEXT NOT NULL DEFAULT 'approve_plan';
+ALTER TABLE projects ADD COLUMN test_execution_mode TEXT NOT NULL DEFAULT 'sandboxed';
+ALTER TABLE projects ADD COLUMN baseline_checks INTEGER NOT NULL DEFAULT 1;
+ALTER TABLE projects ADD COLUMN max_changed_files INTEGER NOT NULL DEFAULT 100;
+ALTER TABLE projects ADD COLUMN max_diff_bytes INTEGER NOT NULL DEFAULT 1048576;
+ALTER TABLE projects ADD COLUMN blocked_paths_json TEXT NOT NULL DEFAULT '[]';
+
+ALTER TABLE jobs ADD COLUMN base_commit_sha TEXT;
+ALTER TABLE jobs ADD COLUMN head_commit_sha TEXT;
+ALTER TABLE jobs ADD COLUMN base_stale INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE jobs ADD COLUMN resume_phase TEXT;
+ALTER TABLE jobs ADD COLUMN plan_approved_at TEXT;
+
+ALTER TABLE agent_runs ADD COLUMN output_truncated INTEGER NOT NULL DEFAULT 0;
+
+ALTER TABLE test_runs ADD COLUMN baseline INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE test_runs ADD COLUMN sandboxed INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE test_runs ADD COLUMN output_truncated INTEGER NOT NULL DEFAULT 0;

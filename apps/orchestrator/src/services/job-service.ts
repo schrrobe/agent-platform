@@ -5,10 +5,11 @@ import {
   type JobDetail,
   type JobState,
   type JobSummary,
+  type PipelinePhase,
 } from '@agent/shared';
 import type { Repositories } from '@agent/database';
 import { LinearService } from '@agent/linear';
-import { assertManualTransition } from '@agent/workflow';
+import { assertManualTransition, assertTransition } from '@agent/workflow';
 import type { AppConfig } from '../config.js';
 import type { Publisher } from '../events/publisher.js';
 import type { LogStore } from '../services/log-store.js';
@@ -104,8 +105,12 @@ export class JobService {
     });
   }
 
-  /** Setzt den Job auf agent_ready, setzt Zähler zurück und reiht ihn ein. */
-  private moveToAgentReady(job: Job, message: string): JobSummary {
+  /** Setzt den Job auf agent_ready und reiht ihn am gewünschten Checkpoint ein. */
+  private moveToAgentReady(
+    job: Job,
+    message: string,
+    options: { resumePhase: PipelinePhase; resetLoops?: boolean },
+  ): JobSummary {
     if (!isManualTransitionAllowed(job.state, 'agent_ready')) {
       throw new JobServiceError(
         'INVALID_TRANSITION',
@@ -114,10 +119,15 @@ export class JobService {
     }
     this.deps.repos.jobs.update(job.id, {
       state: 'agent_ready',
-      reviewLoopCount: 0,
+      reviewLoopCount: options.resetLoops ? 0 : job.reviewLoopCount,
       pauseRequested: false,
       lastError: null,
       finishedAt: null,
+      resumePhase: options.resumePhase,
+      planApprovedAt:
+        options.resumePhase === 'preflight' || options.resumePhase === 'planning'
+          ? null
+          : job.planApprovedAt,
     });
     this.deps.logStore.append(job.id, {
       ts: new Date().toISOString(),
@@ -131,7 +141,12 @@ export class JobService {
   }
 
   async start(jobId: string): Promise<JobSummary> {
-    return this.withJob(jobId, (job) => this.moveToAgentReady(job, 'Workflow gestartet'));
+    return this.withJob(jobId, (job) =>
+      this.moveToAgentReady(job, 'Workflow gestartet', {
+        resumePhase: 'preflight',
+        resetLoops: true,
+      }),
+    );
   }
 
   async retry(jobId: string): Promise<JobSummary> {
@@ -142,7 +157,59 @@ export class JobService {
           `Retry ist nur aus failed/needs_human/paused möglich (aktuell: ${job.state})`,
         );
       }
-      return this.moveToAgentReady(job, 'Erneuter Versuch gestartet');
+      if (job.baseStale) {
+        throw new JobServiceError(
+          'CONFLICT',
+          'Basisbranch ist fortgeschritten; Branch manuell aktualisieren oder Ticket als neuen Job importieren',
+        );
+      }
+      return this.moveToAgentReady(job, 'Lauf am gespeicherten Checkpoint fortgesetzt', {
+        resumePhase: job.resumePhase ?? 'preflight',
+        resetLoops: job.state !== 'paused',
+      });
+    });
+  }
+
+  async approvePlan(jobId: string, note: string): Promise<JobSummary> {
+    return this.withJob(jobId, (job) => {
+      if (job.state !== 'awaiting_plan_approval') {
+        throw new JobServiceError(
+          'INVALID_TRANSITION',
+          `Planfreigabe ist nur aus awaiting_plan_approval möglich (aktuell: ${job.state})`,
+        );
+      }
+      assertTransition(job.state, 'agent_ready');
+      if (note.trim()) {
+        const artifact = this.deps.repos.artifacts.insert({
+          jobId,
+          type: 'approval',
+          content: note.trim(),
+        });
+        this.deps.publisher.record({
+          type: 'artifact.created',
+          jobId,
+          payload: {
+            artifact: {
+              id: artifact.id,
+              jobId,
+              agentRunId: null,
+              type: artifact.type,
+              path: null,
+              createdAt: artifact.createdAt,
+            },
+          },
+        });
+      }
+      this.deps.repos.jobs.update(jobId, {
+        state: 'agent_ready',
+        planApprovedAt: new Date().toISOString(),
+        resumePhase: 'implementing',
+        finishedAt: null,
+        lastError: null,
+      });
+      this.broadcastStateChange(jobId, job.state, 'agent_ready', 'Plan menschlich freigegeben');
+      this.deps.queue.enqueueAfterCurrent(jobId);
+      return this.getSummary(jobId);
     });
   }
 
@@ -169,6 +236,7 @@ export class JobService {
         pauseRequested: false,
         currentAgent: null,
         activePgid: null,
+        resumePhase: job.resumePhase ?? 'preflight',
       });
       this.broadcastStateChange(jobId, job.state, 'paused', 'Pausiert');
       const summary = this.getSummary(jobId);
@@ -179,7 +247,12 @@ export class JobService {
 
   async cancel(jobId: string): Promise<JobSummary> {
     return this.withJob(jobId, (job) => {
-      if (job.state === 'done' || job.state === 'failed') {
+      if (
+        job.state === 'done' ||
+        job.state === 'failed' ||
+        job.state === 'ready_for_human' ||
+        job.state === 'awaiting_plan_approval'
+      ) {
         throw new JobServiceError('CONFLICT', `Job ist bereits ${job.state}`);
       }
       if (this.deps.queue.isRunning(jobId)) {
@@ -188,6 +261,7 @@ export class JobService {
         return this.getSummary(jobId);
       }
       this.deps.queue.cancel(jobId);
+      assertTransition(job.state, 'failed');
       this.deps.repos.jobs.update(jobId, {
         state: 'failed',
         lastError: 'Vom Benutzer abgebrochen',
@@ -217,13 +291,31 @@ export class JobService {
       }
       assertManualTransition(job.state, to);
       if (to === 'agent_ready') {
-        return this.moveToAgentReady(job, 'Workflow per Board gestartet');
+        return this.moveToAgentReady(job, 'Workflow per Board gestartet', {
+          resumePhase: job.resumePhase ?? 'preflight',
+          resetLoops: job.state !== 'paused',
+        });
+      }
+      if (to === 'inbox') {
+        this.deps.repos.jobs.update(jobId, {
+          state: to,
+          resumePhase: 'preflight',
+          planApprovedAt: null,
+        });
+        this.broadcastStateChange(jobId, job.state, to, 'Plan verworfen und nach Inbox verschoben');
+        return this.getSummary(jobId);
       }
       const patch =
-        to === 'done' ? { state: to, finishedAt: new Date().toISOString() } : { state: to };
+        to === 'done'
+          ? { state: to, finishedAt: new Date().toISOString(), resumePhase: null }
+          : { state: to };
       this.deps.repos.jobs.update(jobId, patch);
       this.broadcastStateChange(jobId, job.state, to, `Manuell nach ${to} verschoben`);
-      return this.getSummary(jobId);
+      const summary = this.getSummary(jobId);
+      if (to === 'done') {
+        this.deps.publisher.record({ type: 'job.completed', jobId, payload: { job: summary } });
+      }
+      return summary;
     });
   }
 

@@ -1,6 +1,14 @@
 import path from 'node:path';
+import fs from 'node:fs';
 import type { Logger } from 'pino';
-import { ClaudeCodeAdapter, CodexCliAdapter, ProcessExecutor, buildChildEnv } from '@agent/agents';
+import {
+  ClaudeCodeAdapter,
+  CodexCliAdapter,
+  ProcessExecutor,
+  buildClaudeEnv,
+  buildCodexEnv,
+  buildGitEnv,
+} from '@agent/agents';
 import { GitService } from '@agent/git';
 import { LinearService } from '@agent/linear';
 import { createRepositories, type AppDatabase, type Repositories } from '@agent/database';
@@ -9,6 +17,7 @@ import { EventBus } from './events/bus.js';
 import { Publisher } from './events/publisher.js';
 import { LogStore } from './services/log-store.js';
 import { KeyedMutex } from './services/mutex.js';
+import { TestSandbox } from './services/test-sandbox.js';
 import { JobPipeline } from './pipeline/pipeline.js';
 import { JobQueue } from './pipeline/queue.js';
 import { JobService } from './services/job-service.js';
@@ -24,6 +33,7 @@ export interface AppContext {
   linear: LinearService;
   git: GitService;
   executor: ProcessExecutor;
+  testSandbox: TestSandbox;
   queue: JobQueue;
   pipeline: JobPipeline;
   jobs: JobService;
@@ -44,10 +54,19 @@ export function createContext(
   const bus = new EventBus();
   const publisher = new Publisher(bus, repos.jobEvents);
   const logStore = new LogStore(config.logsDir);
-  const childEnv = buildChildEnv(process.env);
+  const gitHome = path.join(config.dataDir, 'git-home');
+  fs.mkdirSync(gitHome, { recursive: true });
+  const gitEnv = buildGitEnv(process.env, gitHome);
+  const claudeEnv = buildClaudeEnv(process.env);
+  const codexEnv = buildCodexEnv(process.env);
 
   const executor = new ProcessExecutor();
-  const git = new GitService({ runner: executor, env: childEnv });
+  const git = new GitService({ runner: executor, env: gitEnv });
+  const testSandbox = new TestSandbox({
+    runner: executor,
+    dataDir: config.dataDir,
+    srtBin: config.agents.srtBin,
+  });
   const linear =
     overrides.linear ??
     new LinearService({
@@ -57,14 +76,14 @@ export function createContext(
 
   const claude = new ClaudeCodeAdapter({
     runner: executor,
-    env: childEnv,
+    env: claudeEnv,
     bin: config.agents.claudeBin,
     model: config.agents.claudeModel,
     maxBudgetUsd: config.agents.claudeMaxBudgetUsd,
   });
   const codex = new CodexCliAdapter({
     runner: executor,
-    env: childEnv,
+    env: codexEnv,
     bin: config.agents.codexBin,
     model: config.agents.codexModel,
     lastMessageDir: path.join(config.dataDir, 'codex-runs'),
@@ -80,8 +99,7 @@ export function createContext(
     linear,
     publisher,
     logStore,
-    executor,
-    childEnv,
+    testSandbox,
   });
   const queue = new JobQueue({ pipeline, config, logger, repos });
   const mutex = new KeyedMutex();
@@ -98,6 +116,7 @@ export function createContext(
     linear,
     git,
     executor,
+    testSandbox,
     queue,
     pipeline,
     jobs,

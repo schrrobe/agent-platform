@@ -12,7 +12,10 @@ export function runRecovery(ctx: AppContext): { killedGroups: number; failedJobs
   const log = ctx.logger.child({ scope: 'recovery' });
 
   let killedGroups = 0;
-  for (const { pgid, jobId } of ctx.repos.agentRuns.listRunningPgids()) {
+  const groups = new Map<number, string>();
+  for (const { pgid, jobId } of ctx.repos.agentRuns.listRunningPgids()) groups.set(pgid, jobId);
+  for (const { pgid, jobId } of ctx.repos.jobs.listActivePgids()) groups.set(pgid, jobId);
+  for (const [pgid, jobId] of groups) {
     try {
       process.kill(-pgid, 'SIGKILL');
       killedGroups += 1;
@@ -22,6 +25,7 @@ export function runRecovery(ctx: AppContext): { killedGroups: number; failedJobs
     }
   }
   ctx.repos.agentRuns.failAllRunning('Durch Neustart unterbrochen');
+  ctx.repos.testRuns.failAllRunning('Durch Neustart unterbrochen');
 
   const active = ctx.repos.jobs.listByStates(ACTIVE_STATES);
   for (const job of active) {

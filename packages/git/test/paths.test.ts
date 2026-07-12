@@ -1,10 +1,12 @@
 import { describe, expect, it } from 'vitest';
 import {
   PathValidationError,
+  branchForJob,
   branchForIdentifier,
   identifierToSlug,
   isPathInside,
   worktreePathFor,
+  worktreePathForJob,
 } from '../src/paths.js';
 
 describe('isPathInside', () => {
@@ -25,6 +27,9 @@ describe('identifierToSlug / branchForIdentifier', () => {
   it('normalisiert gültige Identifier', () => {
     expect(identifierToSlug('APP-123')).toBe('app-123');
     expect(branchForIdentifier('APP-123')).toBe('agent/app-123');
+    expect(branchForJob('APP-123', '11111111-1111-4111-8111-111111111111')).toBe(
+      'agent/app-123/11111111111141118111111111111111',
+    );
   });
 
   it('wirft bei Pfad-Traversal-Versuchen und ungültigen Formaten', () => {
@@ -37,6 +42,9 @@ describe('identifierToSlug / branchForIdentifier', () => {
 describe('worktreePathFor', () => {
   it('baut Pfade innerhalb des Worktree-Roots', () => {
     expect(worktreePathFor('/worktrees/demo', 'APP-123')).toBe('/worktrees/demo/app-123');
+    expect(
+      worktreePathForJob('/worktrees/demo', 'APP-123', '11111111-1111-4111-8111-111111111111'),
+    ).toBe('/worktrees/demo/app-123-11111111111141118111111111111111');
   });
 
   it('kann durch Identifier nicht aus dem Root ausbrechen', () => {

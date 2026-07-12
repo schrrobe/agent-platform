@@ -46,6 +46,8 @@ const hasArgs = (spec: ProcessSpec, ...parts: string[]) =>
 let tmp: string;
 let repoDir: string;
 let worktreeRoot: string;
+const JOB_ID = '11111111-1111-4111-8111-111111111111';
+const JOB_SUFFIX = '11111111111141118111111111111111';
 
 beforeEach(() => {
   tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'agent-git-test-'));
@@ -71,6 +73,10 @@ function baseResponder(overrides: Responder = () => undefined): Responder {
     const custom = overrides(spec);
     if (custom) return custom;
     if (hasArgs(spec, 'rev-parse', '--is-inside-work-tree')) return { stdout: 'true\n' };
+    if (hasArgs(spec, 'rev-parse', '--git-path')) {
+      return { stdout: `${path.join(repoDir, '.git', 'info', 'attributes')}\n` };
+    }
+    if (hasArgs(spec, 'rev-parse', '--verify')) return { stdout: 'base123\n' };
     if (hasArgs(spec, 'worktree', 'list')) return { stdout: '' };
     if (hasArgs(spec, 'show-ref') && spec.args.some((a) => a.includes('agent/')))
       return { exitCode: 1 };
@@ -86,30 +92,37 @@ describe('ensureWorktree', () => {
       repositoryPath: repoDir,
       worktreeRoot,
       identifier: 'APP-123',
+      jobId: JOB_ID,
       baseBranch: 'main',
     });
 
     expect(result.created).toBe(true);
-    expect(result.branch).toBe('agent/app-123');
-    expect(result.worktreePath).toBe(path.join(worktreeRoot, 'app-123'));
+    expect(result.branch).toBe(`agent/app-123/${JOB_SUFFIX}`);
+    expect(result.worktreePath).toBe(path.join(worktreeRoot, `app-123-${JOB_SUFFIX}`));
+    expect(result.baseCommit).toBe('base123');
 
     const add = runner.argsOfCall((spec) => hasArgs(spec, 'worktree', 'add'));
     expect(add?.args).toEqual([
+      '-c',
+      'core.hooksPath=/dev/null',
+      '-c',
+      'core.fsmonitor=false',
       'worktree',
       'add',
       '-b',
-      'agent/app-123',
-      path.join(worktreeRoot, 'app-123'),
-      'main',
+      `agent/app-123/${JOB_SUFFIX}`,
+      path.join(worktreeRoot, `app-123-${JOB_SUFFIX}`),
+      'base123',
     ]);
-    expect(runner.argsOfCall((spec) => hasArgs(spec, 'worktree', 'prune'))).toBeDefined();
-    expect(fs.existsSync(path.join(worktreeRoot, 'app-123', '.agent'))).toBe(true);
+    expect(runner.argsOfCall((spec) => hasArgs(spec, 'worktree', 'prune'))).toBeUndefined();
+    expect(fs.existsSync(path.join(worktreeRoot, `app-123-${JOB_SUFFIX}`, '.agent'))).toBe(true);
   });
 
-  it('verwendet existierenden Branch ohne -b weiter', async () => {
+  it('bindet den bekannten Branch eines begonnenen Jobs ohne -b erneut an', async () => {
     const { git, runner } = service(
       baseResponder((spec) => {
-        if (hasArgs(spec, 'show-ref', 'refs/heads/agent/app-123')) return { exitCode: 0 };
+        if (hasArgs(spec, 'show-ref', `refs/heads/agent/app-123/${JOB_SUFFIX}`))
+          return { exitCode: 0 };
         return undefined;
       }),
     );
@@ -117,25 +130,41 @@ describe('ensureWorktree', () => {
       repositoryPath: repoDir,
       worktreeRoot,
       identifier: 'APP-123',
+      jobId: JOB_ID,
       baseBranch: 'main',
+      expectedBaseCommit: 'base123',
     });
     const add = runner.argsOfCall((spec) => hasArgs(spec, 'worktree', 'add'));
     expect(add?.args).toEqual([
+      '-c',
+      'core.hooksPath=/dev/null',
+      '-c',
+      'core.fsmonitor=false',
       'worktree',
       'add',
-      path.join(worktreeRoot, 'app-123'),
-      'agent/app-123',
+      path.join(worktreeRoot, `app-123-${JOB_SUFFIX}`),
+      `agent/app-123/${JOB_SUFFIX}`,
     ]);
   });
 
   it('verwendet registrierten, gesunden Worktree unverändert weiter', async () => {
-    const worktreePath = path.join(worktreeRoot, 'app-123');
+    const worktreePath = path.join(worktreeRoot, `app-123-${JOB_SUFFIX}`);
     fs.mkdirSync(worktreePath, { recursive: true });
+    fs.mkdirSync(path.join(worktreePath, '.agent'), { recursive: true });
+    fs.writeFileSync(
+      path.join(worktreePath, '.agent', 'OWNER.json'),
+      JSON.stringify({
+        jobId: JOB_ID,
+        branch: `agent/app-123/${JOB_SUFFIX}`,
+        repositoryPath: repoDir,
+        baseCommit: 'base123',
+      }),
+    );
     const { git, runner } = service(
       baseResponder((spec) => {
         if (hasArgs(spec, 'worktree', 'list')) {
           return {
-            stdout: `worktree ${repoDir}\nHEAD aaa\nbranch refs/heads/main\n\nworktree ${worktreePath}\nHEAD bbb\nbranch refs/heads/agent/app-123\n`,
+            stdout: `worktree ${repoDir}\nHEAD aaa\nbranch refs/heads/main\n\nworktree ${worktreePath}\nHEAD bbb\nbranch refs/heads/agent/app-123/${JOB_SUFFIX}\n`,
           };
         }
         return undefined;
@@ -145,6 +174,7 @@ describe('ensureWorktree', () => {
       repositoryPath: repoDir,
       worktreeRoot,
       identifier: 'APP-123',
+      jobId: JOB_ID,
       baseBranch: 'main',
     });
     expect(result.created).toBe(false);
@@ -156,7 +186,7 @@ describe('ensureWorktree', () => {
       baseResponder((spec) => {
         if (hasArgs(spec, 'worktree', 'list')) {
           return {
-            stdout: `worktree ${path.join(tmp, 'anderswo')}\nHEAD bbb\nbranch refs/heads/agent/app-123\n`,
+            stdout: `worktree ${path.join(tmp, 'anderswo')}\nHEAD bbb\nbranch refs/heads/agent/app-123/${JOB_SUFFIX}\n`,
           };
         }
         return undefined;
@@ -167,6 +197,7 @@ describe('ensureWorktree', () => {
         repositoryPath: repoDir,
         worktreeRoot,
         identifier: 'APP-123',
+        jobId: JOB_ID,
         baseBranch: 'main',
       }),
     ).rejects.toThrow(/bereits im Worktree/);
@@ -179,14 +210,33 @@ describe('ensureWorktree', () => {
         repositoryPath: repoDir,
         worktreeRoot: path.join(repoDir, 'wt'),
         identifier: 'APP-123',
+        jobId: JOB_ID,
         baseBranch: 'main',
       }),
     ).rejects.toThrow(GitError);
   });
 
+  it('erkennt auch eine symlink-basierte Worktree-Wurzel innerhalb des Repositories', async () => {
+    const nested = path.join(repoDir, 'nested');
+    const linkedRoot = path.join(tmp, 'linked-worktrees');
+    fs.mkdirSync(nested, { recursive: true });
+    fs.symlinkSync(nested, linkedRoot);
+    const { git } = service(baseResponder());
+    await expect(
+      git.ensureWorktree({
+        repositoryPath: repoDir,
+        worktreeRoot: linkedRoot,
+        identifier: 'APP-123',
+        jobId: JOB_ID,
+        baseBranch: 'main',
+      }),
+    ).rejects.toThrow(/darf nicht innerhalb/);
+  });
+
   it('wirft, wenn der Basisbranch fehlt', async () => {
     const { git } = service(
       baseResponder((spec) => {
+        if (hasArgs(spec, 'rev-parse', '--verify')) return { exitCode: 1, stderr: 'missing' };
         if (hasArgs(spec, 'show-ref')) return { exitCode: 1 };
         return undefined;
       }),
@@ -196,9 +246,81 @@ describe('ensureWorktree', () => {
         repositoryPath: repoDir,
         worktreeRoot,
         identifier: 'APP-123',
+        jobId: JOB_ID,
         baseBranch: 'main',
       }),
     ).rejects.toThrow(/Basisbranch/);
+  });
+
+  it('verweigert Repositories, die den reservierten .agent-Pfad tracken', async () => {
+    const { git } = service(
+      baseResponder((spec) =>
+        hasArgs(spec, 'ls-tree') ? { stdout: '.agent/project-file.md\n' } : undefined,
+      ),
+    );
+    await expect(
+      git.ensureWorktree({
+        repositoryPath: repoDir,
+        worktreeRoot,
+        identifier: 'APP-123',
+        jobId: JOB_ID,
+        baseBranch: 'main',
+      }),
+    ).rejects.toThrow(/reservierten Pfad/);
+  });
+
+  it('verweigert externe Filter aus getrackten .gitattributes-Dateien', async () => {
+    const { git } = service(
+      baseResponder((spec) => {
+        if (hasArgs(spec, 'ls-tree') && !spec.args.includes('.agent')) {
+          return { stdout: '.gitattributes\n' };
+        }
+        if (hasArgs(spec, 'show')) return { stdout: '*.png filter=evil\n' };
+        return undefined;
+      }),
+    );
+    await expect(
+      git.ensureWorktree({
+        repositoryPath: repoDir,
+        worktreeRoot,
+        identifier: 'APP-123',
+        jobId: JOB_ID,
+        baseBranch: 'main',
+      }),
+    ).rejects.toThrow(/externen Git-Filter/);
+  });
+
+  it('verweigert externe Filter aus .git/info/attributes', async () => {
+    const infoDir = path.join(repoDir, '.git', 'info');
+    fs.mkdirSync(infoDir, { recursive: true });
+    fs.writeFileSync(path.join(infoDir, 'attributes'), '*.bin filter=evil\n');
+    const { git } = service(baseResponder());
+    await expect(
+      git.ensureWorktree({
+        repositoryPath: repoDir,
+        worktreeRoot,
+        identifier: 'APP-123',
+        jobId: JOB_ID,
+        baseBranch: 'main',
+      }),
+    ).rejects.toThrow(/externen Git-Filter/);
+  });
+
+  it('löscht kein unbekanntes Verzeichnis am berechneten Zielpfad', async () => {
+    const occupiedPath = path.join(worktreeRoot, `app-123-${JOB_SUFFIX}`);
+    fs.mkdirSync(occupiedPath, { recursive: true });
+    fs.writeFileSync(path.join(occupiedPath, 'important.txt'), 'behalten');
+    const { git } = service(baseResponder());
+    await expect(
+      git.ensureWorktree({
+        repositoryPath: repoDir,
+        worktreeRoot,
+        identifier: 'APP-123',
+        jobId: JOB_ID,
+        baseBranch: 'main',
+      }),
+    ).rejects.toThrow(/keine automatische Löschung/);
+    expect(fs.readFileSync(path.join(occupiedPath, 'important.txt'), 'utf8')).toBe('behalten');
   });
 });
 
@@ -212,11 +334,30 @@ describe('commitAll', () => {
     const hash = await git.commitAll(repoDir, 'agent: Iteration 1');
     expect(hash).toBe('abc123');
 
-    const add = runner.argsOfCall((spec) => spec.args[0] === 'add');
-    expect(add?.args).toEqual(['add', '-A', '--', '.', ':(exclude).agent']);
+    const add = runner.argsOfCall((spec) => spec.args.includes('add'));
+    expect(add?.args).toEqual([
+      '-c',
+      'core.fsmonitor=false',
+      'add',
+      '-A',
+      '--',
+      '.',
+      ':(exclude).agent',
+    ]);
 
-    const commit = runner.argsOfCall((spec) => spec.args[0] === 'commit');
-    expect(commit?.args).toEqual(['commit', '-m', 'agent: Iteration 1']);
+    const commit = runner.argsOfCall((spec) => spec.args.includes('commit'));
+    expect(commit?.args).toEqual([
+      '-c',
+      'core.hooksPath=/dev/null',
+      '-c',
+      'commit.gpgSign=false',
+      '-c',
+      'core.fsmonitor=false',
+      'commit',
+      '--no-verify',
+      '-m',
+      'agent: Iteration 1',
+    ]);
     expect(commit?.env?.GIT_AUTHOR_NAME).toBe('Agent Orchestrator');
     expect(commit?.env?.GIT_COMMITTER_EMAIL).toBe('agent-orchestrator@localhost');
   });
@@ -227,12 +368,22 @@ describe('commitAll', () => {
       return undefined;
     });
     expect(await git.commitAll(repoDir, 'leer')).toBeNull();
-    expect(runner.argsOfCall((spec) => spec.args[0] === 'commit')).toBeUndefined();
+    expect(runner.argsOfCall((spec) => spec.args.includes('commit'))).toBeUndefined();
+  });
+
+  it('verweigert vor dem Staging neu aktivierte externe Filter', async () => {
+    fs.writeFileSync(path.join(repoDir, '.gitattributes'), '*.bin filter=evil\n');
+    const { git, runner } = service((spec) => {
+      if (hasArgs(spec, 'ls-files')) return { stdout: '.gitattributes\n' };
+      return undefined;
+    });
+    await expect(git.commitAll(repoDir, 'unsicher')).rejects.toThrow(/externen Git-Filter/);
+    expect(runner.argsOfCall((spec) => spec.args.includes('add'))).toBeUndefined();
   });
 });
 
-describe('cleanWorktree', () => {
-  it('entfernt stale index.lock und räumt mit .agent-Ausnahme', async () => {
+describe('assertWorktreeClean', () => {
+  it('lässt index.lock unangetastet und führt kein destruktives reset/clean aus', async () => {
     const worktreePath = path.join(worktreeRoot, 'app-123');
     const gitDir = path.join(tmp, 'gitdir');
     fs.mkdirSync(worktreePath, { recursive: true });
@@ -241,12 +392,18 @@ describe('cleanWorktree', () => {
     fs.writeFileSync(path.join(gitDir, 'index.lock'), '');
 
     const { git, runner } = service(() => undefined);
-    await git.cleanWorktree(worktreePath);
+    await git.assertWorktreeClean(worktreePath);
 
-    expect(fs.existsSync(path.join(gitDir, 'index.lock'))).toBe(false);
-    expect(runner.argsOfCall((spec) => hasArgs(spec, 'reset', '--hard', 'HEAD'))).toBeDefined();
-    const clean = runner.argsOfCall((spec) => spec.args[0] === 'clean');
-    expect(clean?.args).toEqual(['clean', '-fd', '-e', '.agent']);
+    expect(fs.existsSync(path.join(gitDir, 'index.lock'))).toBe(true);
+    expect(runner.argsOfCall((spec) => hasArgs(spec, 'reset', '--hard', 'HEAD'))).toBeUndefined();
+    expect(runner.argsOfCall((spec) => spec.args[0] === 'clean')).toBeUndefined();
+  });
+
+  it('verweigert einen schmutzigen Worktree, statt Änderungen zu verwerfen', async () => {
+    const { git } = service((spec) =>
+      spec.args.includes('status') ? { stdout: ' M src/app.ts\n' } : undefined,
+    );
+    await expect(git.assertWorktreeClean(repoDir)).rejects.toThrow(/lokale Änderungen/);
   });
 });
 
@@ -259,27 +416,55 @@ describe('Diff und Status', () => {
     const diff = await git.diffAgainstBase(repoDir, 'main');
     expect(diff).toContain('diff --git');
     const call = runner.argsOfCall((spec) => spec.args[0] === 'diff');
-    expect(call?.args).toEqual(['diff', 'main...HEAD', '--', '.', ':(exclude).agent']);
+    expect(call?.args).toEqual([
+      'diff',
+      '--no-ext-diff',
+      'main...HEAD',
+      '--',
+      '.',
+      ':(exclude).agent',
+    ]);
   });
 
   it('changedFiles parst name-status-Ausgabe', async () => {
     const { git } = service((spec) => {
-      if (hasArgs(spec, '--name-status')) return { stdout: 'M\tsrc/app.ts\nA\tsrc/neu.ts\n' };
+      if (hasArgs(spec, '--name-status')) {
+        return { stdout: 'M\tsrc/app.ts\nA\tsrc/neu.ts\nR100\tsrc/alt.ts\tsrc/neu2.ts\n' };
+      }
       return undefined;
     });
     expect(await git.changedFiles(repoDir, 'main')).toEqual([
       { status: 'M', path: 'src/app.ts' },
       { status: 'A', path: 'src/neu.ts' },
+      { status: 'R100', previousPath: 'src/alt.ts', path: 'src/neu2.ts' },
     ]);
   });
 
   it('hasUncommittedChanges schließt .agent aus', async () => {
     const { git, runner } = service((spec) => {
-      if (spec.args[0] === 'status') return { stdout: '' };
+      if (hasArgs(spec, 'status')) return { stdout: '' };
       return undefined;
     });
     expect(await git.hasUncommittedChanges(repoDir)).toBe(false);
-    const call = runner.argsOfCall((spec) => spec.args[0] === 'status');
-    expect(call?.args).toEqual(['status', '--porcelain', '--', '.', ':(exclude).agent']);
+    const call = runner.argsOfCall((spec) => spec.args.includes('status'));
+    expect(call?.args).toEqual([
+      '-c',
+      'core.fsmonitor=false',
+      'status',
+      '--porcelain',
+      '--',
+      '.',
+      ':(exclude).agent',
+    ]);
+  });
+
+  it('erkennt binäre Änderungen über numstat', async () => {
+    const { git } = service((spec) => {
+      if (hasArgs(spec, '--numstat')) {
+        return { stdout: '12\t3\tsrc/app.ts\n-\t-\tassets/image.png\n' };
+      }
+      return undefined;
+    });
+    expect(await git.binaryChangedFiles(repoDir, 'main')).toEqual(['assets/image.png']);
   });
 });

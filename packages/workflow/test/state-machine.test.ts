@@ -36,7 +36,7 @@ describe('assertManualTransition', () => {
   it('erlaubt Retry und Freigabe aus failed/needs_human/paused', () => {
     expect(() => assertManualTransition('failed', 'agent_ready')).not.toThrow();
     expect(() => assertManualTransition('needs_human', 'agent_ready')).not.toThrow();
-    expect(() => assertManualTransition('needs_human', 'done')).not.toThrow();
+    expect(() => assertManualTransition('needs_human', 'ready_for_human')).not.toThrow();
     expect(() => assertManualTransition('paused', 'agent_ready')).not.toThrow();
     expect(() => assertManualTransition('paused', 'inbox')).not.toThrow();
   });
@@ -52,9 +52,13 @@ describe('assertManualTransition', () => {
 });
 
 describe('decideAfterReview', () => {
-  it('PASS führt unabhängig vom Zähler zu done', () => {
-    expect(decideAfterReview('PASS', { reviewLoopCount: 0, maxReviewLoops: 3 })).toBe('done');
-    expect(decideAfterReview('PASS', { reviewLoopCount: 3, maxReviewLoops: 3 })).toBe('done');
+  it('PASS führt unabhängig vom Zähler zur menschlichen Übergabe', () => {
+    expect(decideAfterReview('PASS', { reviewLoopCount: 0, maxReviewLoops: 3 })).toBe(
+      'ready_for_human',
+    );
+    expect(decideAfterReview('PASS', { reviewLoopCount: 3, maxReviewLoops: 3 })).toBe(
+      'ready_for_human',
+    );
   });
 
   it('FAIL mit Budget führt zu rework', () => {

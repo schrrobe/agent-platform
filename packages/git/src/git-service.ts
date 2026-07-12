@@ -1,16 +1,17 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import type { ProcessResult, ProcessRunner } from '@agent/shared';
-import { branchForIdentifier, isPathInside, isSameOrInside, worktreePathFor } from './paths.js';
+import { branchForJob, isSameOrInside, worktreePathForJob } from './paths.js';
 
 /**
  * Sichere Git-Fassade. Bewusst NICHT vorhanden: push, merge, force-push,
  * Branch-Löschung — solche Operationen existieren hier nicht (ADR-010).
- * `.agent/` (PLAN.md/REVIEW.md) wird bei add/status/diff/clean konsequent per
+ * `.agent/` (OWNER/PLAN/REVIEW) wird bei add/status/diff konsequent per
  * Pathspec ausgeschlossen (ADR-005).
  */
 
 export const AGENT_DIR = '.agent';
+export const OWNER_FILE = 'OWNER.json';
 const EXCLUDE_AGENT = `:(exclude)${AGENT_DIR}`;
 
 export class GitError extends Error {
@@ -20,6 +21,14 @@ export class GitError extends Error {
   ) {
     super(message);
     this.name = 'GitError';
+  }
+}
+
+/** Sicherer Halt wegen vorhandener/menschlicher Git-Arbeit, kein Infrastrukturfehler. */
+export class GitConflictError extends GitError {
+  constructor(message: string) {
+    super(message);
+    this.name = 'GitConflictError';
   }
 }
 
@@ -40,12 +49,15 @@ export interface EnsureWorktreeInput {
   repositoryPath: string;
   worktreeRoot: string;
   identifier: string;
+  jobId: string;
   baseBranch: string;
+  expectedBaseCommit?: string | null;
 }
 
 export interface EnsureWorktreeResult {
   worktreePath: string;
   branch: string;
+  baseCommit: string;
   created: boolean;
 }
 
@@ -57,12 +69,36 @@ export interface WorktreeEntry {
 export interface ChangedFile {
   status: string;
   path: string;
+  previousPath?: string;
 }
 
 const DEFAULT_IDENTITY: GitIdentity = {
   name: 'Agent Orchestrator',
   email: 'agent-orchestrator@localhost',
 };
+
+function canonicalPath(value: string): string {
+  let cursor = path.resolve(value);
+  const missing: string[] = [];
+  while (!fs.existsSync(cursor)) {
+    const parent = path.dirname(cursor);
+    if (parent === cursor) break;
+    missing.unshift(path.basename(cursor));
+    cursor = parent;
+  }
+  try {
+    return path.join(fs.realpathSync.native(cursor), ...missing);
+  } catch {
+    return path.resolve(value);
+  }
+}
+
+function splitGitPaths(output: string): string[] {
+  return output
+    .split(output.includes('\0') ? '\0' : '\n')
+    .map((entry) => entry.trimEnd())
+    .filter(Boolean);
+}
 
 export class GitService {
   private readonly runner: ProcessRunner;
@@ -88,9 +124,12 @@ export class GitService {
       cwd,
       env: { ...this.env, ...opts.env },
       timeoutMs: this.timeoutMs,
-      maxOutputBytes: 20 * 1024 * 1024,
+      maxOutputBytes: 128 * 1024 * 1024,
     });
     const result = await handle.result;
+    if (result.truncated) {
+      throw new GitError(`git ${args.join(' ')} lieferte eine gekappte Ausgabe`, result);
+    }
     if (!opts.allowFailure && result.exitCode !== 0) {
       const detail = (result.stderr || result.stdout).trim().slice(0, 800);
       throw new GitError(`git ${args.join(' ')} fehlgeschlagen: ${detail}`, result);
@@ -134,117 +173,276 @@ export class GitService {
     return result.exitCode === 0;
   }
 
+  private async hasTrackedAgentDirectory(repositoryPath: string, ref: string): Promise<boolean> {
+    const result = await this.git(repositoryPath, [
+      'ls-tree',
+      '-r',
+      '--name-only',
+      ref,
+      '--',
+      AGENT_DIR,
+    ]);
+    return result.stdout.trim().length > 0;
+  }
+
+  private assertSafeAttributes(content: string, source: string): void {
+    const hasFilter = content
+      .split('\n')
+      .map((line) => line.replace(/\s+#.*$/, '').trim())
+      .filter(Boolean)
+      .some((line) => /(?:^|\s)-?!?filter(?:=|\s|$)/.test(line));
+    if (hasFilter) {
+      throw new GitConflictError(
+        `${source} aktiviert einen externen Git-Filter; automatische Checkouts/Commits verweigert`,
+      );
+    }
+  }
+
+  private async assertNoTrackedFilters(repositoryPath: string, ref: string): Promise<void> {
+    const listed = await this.git(repositoryPath, ['ls-tree', '-r', '--name-only', '-z', ref]);
+    const attributePaths = splitGitPaths(listed.stdout).filter(
+      (entry) => entry === '.gitattributes' || entry.endsWith('/.gitattributes'),
+    );
+    for (const attributePath of attributePaths) {
+      const content = await this.git(repositoryPath, ['show', `${ref}:${attributePath}`]);
+      this.assertSafeAttributes(content.stdout, attributePath);
+    }
+  }
+
+  private async assertNoRepositoryAttributeOverrides(repositoryPath: string): Promise<void> {
+    const configured = await this.git(
+      repositoryPath,
+      ['config', '--local', '--get', 'core.attributesFile'],
+      { allowFailure: true },
+    );
+    if (configured.exitCode === 0 && configured.stdout.trim()) {
+      throw new GitConflictError(
+        'Lokale Git-Konfiguration core.attributesFile ist für automatische Checkouts nicht erlaubt',
+      );
+    }
+    const resolved = await this.git(repositoryPath, ['rev-parse', '--git-path', 'info/attributes']);
+    const reported = resolved.stdout.trim();
+    const infoAttributes = path.isAbsolute(reported)
+      ? reported
+      : path.resolve(repositoryPath, reported);
+    if (infoAttributes && fs.existsSync(infoAttributes)) {
+      const stat = fs.lstatSync(infoAttributes);
+      if (!stat.isFile()) {
+        throw new GitConflictError('Git info/attributes ist keine reguläre Datei');
+      }
+      this.assertSafeAttributes(fs.readFileSync(infoAttributes, 'utf8'), 'Git info/attributes');
+    }
+  }
+
+  private async assertNoWorktreeFilters(worktreePath: string): Promise<void> {
+    const listed = await this.git(worktreePath, [
+      'ls-files',
+      '--cached',
+      '--others',
+      '--exclude-standard',
+      '-z',
+    ]);
+    const attributePaths = splitGitPaths(listed.stdout).filter(
+      (entry) => entry === '.gitattributes' || entry.endsWith('/.gitattributes'),
+    );
+    for (const attributePath of attributePaths) {
+      const absolute = path.resolve(worktreePath, attributePath);
+      if (!isSameOrInside(worktreePath, absolute)) {
+        throw new GitConflictError(`Unsicherer .gitattributes-Pfad: ${attributePath}`);
+      }
+      const stat = fs.lstatSync(absolute);
+      if (!stat.isFile()) {
+        throw new GitConflictError(`${attributePath} ist keine reguläre Datei`);
+      }
+      this.assertSafeAttributes(fs.readFileSync(absolute, 'utf8'), attributePath);
+    }
+  }
+
   /**
-   * Erstellt oder repariert den Ticket-Worktree idempotent:
-   * prune → registrierten Eintrag wiederverwenden → kaputte Reste entfernen →
-   * vorhandenen Branch ohne `-b` anbinden, sonst neuen Branch vom Basisbranch.
+   * Erstellt den jobgebundenen Worktree idempotent. Bereits registrierte
+   * Worktrees werden nur bei passender Eigentümerdatei wiederverwendet;
+   * beschädigte oder unbekannte Pfade werden niemals automatisch entfernt.
    */
   async ensureWorktree(input: EnsureWorktreeInput): Promise<EnsureWorktreeResult> {
     const repositoryPath = path.resolve(input.repositoryPath);
-    const branch = branchForIdentifier(input.identifier);
-    const worktreePath = worktreePathFor(input.worktreeRoot, input.identifier);
+    const branch = branchForJob(input.identifier, input.jobId);
+    const worktreePath = worktreePathForJob(input.worktreeRoot, input.identifier, input.jobId);
 
-    if (isSameOrInside(repositoryPath, worktreePath)) {
+    const canonicalRepositoryPath = canonicalPath(repositoryPath);
+    const canonicalWorktreePath = canonicalPath(worktreePath);
+    if (isSameOrInside(canonicalRepositoryPath, canonicalWorktreePath)) {
       throw new GitError(
         `Worktree-Pfad ${worktreePath} darf nicht innerhalb des Repositories ${repositoryPath} liegen`,
       );
     }
-    if (isSameOrInside(worktreePath, repositoryPath)) {
+    if (isSameOrInside(canonicalWorktreePath, canonicalRepositoryPath)) {
       throw new GitError(`Repository ${repositoryPath} liegt im Worktree-Pfad ${worktreePath}`);
     }
     if (!(await this.isGitRepo(repositoryPath))) {
       throw new GitError(`Kein Git-Repository: ${repositoryPath}`);
     }
+    await this.assertNoRepositoryAttributeOverrides(repositoryPath);
 
-    await this.git(repositoryPath, ['worktree', 'prune']);
+    let baseCommit: string;
+    try {
+      baseCommit = input.expectedBaseCommit
+        ? await this.resolveCommit(repositoryPath, input.expectedBaseCommit)
+        : await this.resolveCommit(repositoryPath, input.baseBranch);
+    } catch (error) {
+      if (input.expectedBaseCommit) throw error;
+      throw new GitError(`Basisbranch ${input.baseBranch} existiert nicht in ${repositoryPath}`);
+    }
+    if (await this.hasTrackedAgentDirectory(repositoryPath, baseCommit)) {
+      throw new GitConflictError(
+        `Repository verwendet den reservierten Pfad ${AGENT_DIR}/ bereits im Basis-Commit`,
+      );
+    }
+    await this.assertNoTrackedFilters(repositoryPath, baseCommit);
+
     const entries = await this.listWorktrees(repositoryPath);
 
-    const registered = entries.find((entry) => path.resolve(entry.path) === worktreePath);
+    const registered = entries.find(
+      (entry) => canonicalPath(entry.path) === canonicalPath(worktreePath),
+    );
     if (registered) {
       if (registered.branch !== branch) {
-        throw new GitError(
+        throw new GitConflictError(
           `Worktree ${worktreePath} gehört zu Branch ${registered.branch ?? '(detached)'}, erwartet ${branch}`,
         );
       }
       if (await this.isGitRepo(worktreePath)) {
-        this.ensureAgentDir(worktreePath);
-        return { worktreePath, branch, created: false };
+        this.verifyOwner(worktreePath, {
+          jobId: input.jobId,
+          branch,
+          repositoryPath,
+          baseCommit,
+        });
+        return { worktreePath, branch, baseCommit, created: false };
       }
-      // Registriert, aber Verzeichnis kaputt/fehlend → austragen und neu anlegen.
-      await this.git(repositoryPath, ['worktree', 'remove', '--force', worktreePath], {
-        allowFailure: true,
-      });
-      await this.git(repositoryPath, ['worktree', 'prune']);
+      throw new GitConflictError(
+        `Registrierter Worktree ${worktreePath} ist beschädigt; keine automatische Löschung`,
+      );
     }
 
     const occupied = entries.find(
-      (entry) => entry.branch === branch && path.resolve(entry.path) !== worktreePath,
+      (entry) =>
+        entry.branch === branch && canonicalPath(entry.path) !== canonicalPath(worktreePath),
     );
     if (occupied) {
-      throw new GitError(`Branch ${branch} ist bereits im Worktree ${occupied.path} ausgecheckt`);
+      throw new GitConflictError(
+        `Branch ${branch} ist bereits im Worktree ${occupied.path} ausgecheckt`,
+      );
     }
 
     if (fs.existsSync(worktreePath)) {
-      if (!isPathInside(input.worktreeRoot, worktreePath)) {
-        throw new GitError(`Verweigere Löschung außerhalb des Worktree-Roots: ${worktreePath}`);
-      }
-      fs.rmSync(worktreePath, { recursive: true, force: true });
+      throw new GitConflictError(
+        `Worktree-Ziel ${worktreePath} existiert, ist aber nicht diesem Job zugeordnet; keine automatische Löschung`,
+      );
     }
 
     const hasBranch = await this.branchExists(repositoryPath, branch);
-    if (!hasBranch && !(await this.branchExists(repositoryPath, input.baseBranch))) {
-      throw new GitError(`Basisbranch ${input.baseBranch} existiert nicht in ${repositoryPath}`);
+    if (hasBranch && !input.expectedBaseCommit) {
+      throw new GitConflictError(
+        `Branch ${branch} existiert bereits, ist aber keinem begonnenen Job zugeordnet`,
+      );
     }
 
     fs.mkdirSync(path.dirname(worktreePath), { recursive: true });
     await this.git(
       repositoryPath,
       hasBranch
-        ? ['worktree', 'add', worktreePath, branch]
-        : ['worktree', 'add', '-b', branch, worktreePath, input.baseBranch],
+        ? [
+            '-c',
+            'core.hooksPath=/dev/null',
+            '-c',
+            'core.fsmonitor=false',
+            'worktree',
+            'add',
+            worktreePath,
+            branch,
+          ]
+        : [
+            '-c',
+            'core.hooksPath=/dev/null',
+            '-c',
+            'core.fsmonitor=false',
+            'worktree',
+            'add',
+            '-b',
+            branch,
+            worktreePath,
+            baseCommit,
+          ],
     );
-    this.ensureAgentDir(worktreePath);
-    return { worktreePath, branch, created: true };
+    this.writeOwner(worktreePath, {
+      jobId: input.jobId,
+      branch,
+      repositoryPath,
+      baseCommit,
+    });
+    return { worktreePath, branch, baseCommit, created: true };
   }
 
   private ensureAgentDir(worktreePath: string): void {
     fs.mkdirSync(path.join(worktreePath, AGENT_DIR), { recursive: true });
   }
 
-  /**
-   * Bringt den Worktree vor einem Lauf in einen sauberen Zustand: entfernt
-   * verwaiste index.lock-Dateien (nach Kills), setzt auf HEAD zurück und räumt
-   * untracked Dateien — mit Ausnahme von `.agent/`.
-   */
-  async cleanWorktree(worktreePath: string): Promise<void> {
-    this.removeStaleIndexLock(worktreePath);
-    await this.git(worktreePath, ['reset', '--hard', 'HEAD']);
-    await this.git(worktreePath, ['clean', '-fd', '-e', AGENT_DIR]);
+  private writeOwner(
+    worktreePath: string,
+    owner: { jobId: string; branch: string; repositoryPath: string; baseCommit: string },
+  ): void {
     this.ensureAgentDir(worktreePath);
+    fs.writeFileSync(
+      path.join(worktreePath, AGENT_DIR, OWNER_FILE),
+      `${JSON.stringify({ ...owner, repositoryPath: canonicalPath(owner.repositoryPath) }, null, 2)}\n`,
+      { encoding: 'utf8', flag: 'wx' },
+    );
   }
 
-  private removeStaleIndexLock(worktreePath: string): void {
+  verifyOwner(
+    worktreePath: string,
+    expected: { jobId: string; branch: string; repositoryPath: string; baseCommit: string },
+  ): void {
+    const ownerPath = path.join(worktreePath, AGENT_DIR, OWNER_FILE);
+    let owner: Record<string, unknown>;
     try {
-      const gitFile = path.join(worktreePath, '.git');
-      const stat = fs.statSync(gitFile);
-      let gitDir: string;
-      if (stat.isFile()) {
-        const content = fs.readFileSync(gitFile, 'utf8');
-        const match = /^gitdir:\s*(.+)$/m.exec(content);
-        if (!match?.[1]) return;
-        gitDir = path.resolve(worktreePath, match[1].trim());
-      } else {
-        gitDir = gitFile;
-      }
-      fs.rmSync(path.join(gitDir, 'index.lock'), { force: true });
-    } catch {
-      // Kein .git oder nicht lesbar — cleanWorktree schlägt dann ohnehin fehl.
+      owner = JSON.parse(fs.readFileSync(ownerPath, 'utf8')) as Record<string, unknown>;
+    } catch (error) {
+      const detail = error instanceof Error ? ` (${error.message})` : '';
+      throw new GitConflictError(
+        `Worktree-Eigentümerdatei fehlt oder ist ungültig: ${ownerPath}${detail}`,
+      );
+    }
+    const matches =
+      owner.jobId === expected.jobId &&
+      owner.branch === expected.branch &&
+      owner.baseCommit === expected.baseCommit &&
+      typeof owner.repositoryPath === 'string' &&
+      canonicalPath(owner.repositoryPath) === canonicalPath(expected.repositoryPath);
+    if (!matches) {
+      throw new GitConflictError(
+        `Worktree ${worktreePath} gehört nicht zum erwarteten Job ${expected.jobId}`,
+      );
+    }
+  }
+
+  /**
+   * Verweigert jeden schmutzigen Worktree. Es gibt bewusst weder reset/clean
+   * noch eine automatische Entfernung von Git-Locks.
+   */
+  async assertWorktreeClean(worktreePath: string): Promise<void> {
+    if (await this.hasUncommittedChanges(worktreePath)) {
+      throw new GitConflictError(
+        `Worktree ${worktreePath} enthält lokale Änderungen; kein automatisches reset/clean`,
+      );
     }
   }
 
   /** Arbeitszustand ohne `.agent/`: leer = keine offenen Änderungen. */
   async hasUncommittedChanges(worktreePath: string): Promise<boolean> {
     const result = await this.git(worktreePath, [
+      '-c',
+      'core.fsmonitor=false',
       'status',
       '--porcelain',
       '--',
@@ -260,8 +458,17 @@ export class GitService {
    * @returns Commit-Hash oder null, wenn nichts zu committen war.
    */
   async commitAll(worktreePath: string, message: string): Promise<string | null> {
-    await this.git(worktreePath, ['add', '-A', '--', '.', EXCLUDE_AGENT]);
-    const staged = await this.git(worktreePath, ['diff', '--cached', '--quiet'], {
+    await this.assertNoWorktreeFilters(worktreePath);
+    await this.git(worktreePath, [
+      '-c',
+      'core.fsmonitor=false',
+      'add',
+      '-A',
+      '--',
+      '.',
+      EXCLUDE_AGENT,
+    ]);
+    const staged = await this.git(worktreePath, ['diff', '--no-ext-diff', '--cached', '--quiet'], {
       allowFailure: true,
     });
     if (staged.exitCode === 0) return null;
@@ -271,16 +478,36 @@ export class GitService {
       GIT_COMMITTER_NAME: this.identity.name,
       GIT_COMMITTER_EMAIL: this.identity.email,
     };
-    await this.git(worktreePath, ['commit', '-m', message], { env: identityEnv });
+    await this.git(
+      worktreePath,
+      [
+        '-c',
+        'core.hooksPath=/dev/null',
+        '-c',
+        'commit.gpgSign=false',
+        '-c',
+        'core.fsmonitor=false',
+        'commit',
+        '--no-verify',
+        '-m',
+        message,
+      ],
+      { env: identityEnv },
+    );
     const head = await this.git(worktreePath, ['rev-parse', 'HEAD']);
     return head.stdout.trim();
   }
 
-  /** Review-Diff: Basisbranch (merge-base) bis HEAD, ohne `.agent/`. */
-  async diffAgainstBase(worktreePath: string, baseBranch: string): Promise<string> {
+  private async diffRange(
+    worktreePath: string,
+    baseRef: string,
+    extraArgs: string[] = [],
+  ): Promise<string> {
     const result = await this.git(worktreePath, [
       'diff',
-      `${baseBranch}...HEAD`,
+      '--no-ext-diff',
+      ...extraArgs,
+      `${baseRef}...HEAD`,
       '--',
       '.',
       EXCLUDE_AGENT,
@@ -288,27 +515,55 @@ export class GitService {
     return result.stdout;
   }
 
+  /** Review-Diff: Basisbranch (merge-base) bis HEAD, ohne `.agent/`. */
+  async diffAgainstBase(worktreePath: string, baseBranch: string): Promise<string> {
+    return this.diffRange(worktreePath, baseBranch);
+  }
+
   async changedFiles(worktreePath: string, baseBranch: string): Promise<ChangedFile[]> {
-    const result = await this.git(worktreePath, [
-      'diff',
-      '--name-status',
-      `${baseBranch}...HEAD`,
-      '--',
-      '.',
-      EXCLUDE_AGENT,
-    ]);
-    return result.stdout
+    const stdout = await this.diffRange(worktreePath, baseBranch, ['--name-status']);
+    return stdout
       .split('\n')
       .map((line) => line.trim())
       .filter((line) => line.length > 0)
       .map((line) => {
-        const [status = '', ...rest] = line.split(/\s+/);
-        return { status, path: rest.join(' ') };
+        const [status = '', ...paths] = line.split('\t');
+        if ((status.startsWith('R') || status.startsWith('C')) && paths.length >= 2) {
+          return {
+            status,
+            previousPath: paths[0] as string,
+            path: paths.at(-1) as string,
+          };
+        }
+        return { status, path: paths.join('\t') };
       });
   }
 
   async currentBranch(worktreePath: string): Promise<string> {
     const result = await this.git(worktreePath, ['rev-parse', '--abbrev-ref', 'HEAD']);
     return result.stdout.trim();
+  }
+
+  async resolveCommit(repositoryPath: string, ref: string): Promise<string> {
+    const result = await this.git(repositoryPath, ['rev-parse', '--verify', `${ref}^{commit}`]);
+    return result.stdout.trim();
+  }
+
+  async currentHead(worktreePath: string): Promise<string> {
+    return this.resolveCommit(worktreePath, 'HEAD');
+  }
+
+  async diffStat(worktreePath: string, baseRef: string): Promise<string> {
+    return this.diffRange(worktreePath, baseRef, ['--stat']);
+  }
+
+  async binaryChangedFiles(worktreePath: string, baseRef: string): Promise<string[]> {
+    const stdout = await this.diffRange(worktreePath, baseRef, ['--numstat']);
+    return stdout
+      .split('\n')
+      .map((line) => line.split('\t'))
+      .filter(([added, removed]) => added === '-' && removed === '-')
+      .map((parts) => parts.slice(2).join('\t'))
+      .filter(Boolean);
   }
 }

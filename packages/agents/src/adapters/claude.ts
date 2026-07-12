@@ -1,4 +1,5 @@
 import type { AgentExecutionInput, ProcessResult, ProcessRunner } from '@agent/shared';
+import { PLAN_RESULT_JSON_SCHEMA, REVIEW_RESULT_JSON_SCHEMA } from '@agent/shared';
 import { CliAgentAdapter } from './base.js';
 
 export const CLAUDE_READONLY_TOOLS = 'Read,Glob,Grep';
@@ -39,8 +40,11 @@ export class ClaudeCodeAdapter extends CliAgentAdapter {
       CLAUDE_READONLY_TOOLS,
       '--permission-mode',
       'plan',
+      '--safe-mode',
       '--no-session-persistence',
     ];
+    const schema = input.phase === 'plan' ? PLAN_RESULT_JSON_SCHEMA : REVIEW_RESULT_JSON_SCHEMA;
+    args.push('--json-schema', JSON.stringify(schema));
     if (this.model) args.push('--model', this.model);
     if (this.maxBudgetUsd != null) args.push('--max-budget-usd', String(this.maxBudgetUsd));
     args.push(input.prompt);
@@ -50,7 +54,10 @@ export class ClaudeCodeAdapter extends CliAgentAdapter {
   protected override extractOutput(result: ProcessResult): string {
     const trimmed = result.stdout.trim();
     try {
-      const parsed = JSON.parse(trimmed) as { result?: unknown };
+      const parsed = JSON.parse(trimmed) as { result?: unknown; structured_output?: unknown };
+      if (parsed && parsed.structured_output && typeof parsed.structured_output === 'object') {
+        return JSON.stringify(parsed.structured_output);
+      }
       if (parsed && typeof parsed.result === 'string') return parsed.result;
     } catch {
       // Kein JSON (z. B. Fehlerausgabe) — Rohtext zurückgeben.

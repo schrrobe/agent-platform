@@ -26,8 +26,11 @@ const TABS = [
   'Verlauf',
   'Live-Logs',
   'PLAN.md',
+  'Freigabe',
+  'Implementierung',
   'REVIEW.md',
   'Diff',
+  'Handoff',
   'Tests',
   'Fehler',
   'Metadaten',
@@ -39,6 +42,7 @@ const tab = ref<Tab>('Beschreibung');
 const detail = computed(() => store.detail);
 const busy = ref(false);
 const confirmCancel = ref(false);
+const approvalNote = ref('');
 
 function artifact(type: ArtifactType): string | null {
   const list = detail.value?.artifacts.filter((a) => a.type === type) ?? [];
@@ -47,15 +51,21 @@ function artifact(type: ArtifactType): string | null {
 
 const canStart = computed(() => detail.value?.state === 'inbox');
 const canRetry = computed(() =>
-  detail.value ? ['failed', 'needs_human', 'paused'].includes(detail.value.state) : false,
+  detail.value
+    ? !detail.value.baseStale && ['failed', 'needs_human', 'paused'].includes(detail.value.state)
+    : false,
 );
+const canApprove = computed(() => detail.value?.state === 'awaiting_plan_approval');
 const canPause = computed(() =>
   detail.value ? PAUSABLE_STATES.includes(detail.value.state) : false,
 );
 const canCancel = computed(() =>
-  detail.value ? !['done', 'failed'].includes(detail.value.state) : false,
+  detail.value
+    ? !['done', 'failed', 'ready_for_human', 'awaiting_plan_approval'].includes(detail.value.state)
+    : false,
 );
-const canComplete = computed(() => detail.value?.state === 'needs_human');
+const canComplete = computed(() => detail.value?.state === 'ready_for_human');
+const canAcceptHuman = computed(() => detail.value?.state === 'needs_human');
 const isActive = computed(() =>
   detail.value ? ACTIVE_STATES.includes(detail.value.state) : false,
 );
@@ -74,7 +84,12 @@ async function act(fn: () => Promise<{ id: string; state: JobState }>): Promise<
 const start = () => act(() => api.startJob(detail.value!.id));
 const retry = () => act(() => api.retryJob(detail.value!.id));
 const pause = () => act(() => api.pauseJob(detail.value!.id));
+const approve = () =>
+  act(() => api.approvePlan(detail.value!.id, approvalNote.value)).then(() => {
+    approvalNote.value = '';
+  });
 const complete = () => act(() => api.patchState(detail.value!.id, 'done'));
+const acceptHuman = () => act(() => api.patchState(detail.value!.id, 'ready_for_human'));
 function doCancel(): void {
   confirmCancel.value = false;
   void act(() => api.cancelJob(detail.value!.id));
@@ -102,13 +117,28 @@ function doCancel(): void {
         <button v-if="canStart" class="primary" :disabled="busy" @click="start">▶ Start</button>
         <button v-if="canPause" :disabled="busy" @click="pause">⏸ Pause</button>
         <button v-if="canRetry" :disabled="busy" @click="retry">↻ Erneut</button>
-        <button v-if="canComplete" :disabled="busy" @click="complete">✓ Erledigt</button>
+        <button v-if="canApprove" class="primary" :disabled="busy" @click="approve">
+          ✓ Plan freigeben
+        </button>
+        <button v-if="canComplete" :disabled="busy" @click="complete">✓ Handoff bestätigt</button>
+        <button v-if="canAcceptHuman" :disabled="busy" @click="acceptHuman">
+          ✓ Manuell zur Übergabe freigeben
+        </button>
         <button v-if="canCancel" class="danger" :disabled="busy" @click="confirmCancel = true">
           {{ isActive ? '⏹ Abbrechen' : '✕ Verwerfen' }}
         </button>
         <a class="linear-link" :href="detail.ticket.url" target="_blank" rel="noreferrer"
           >Linear ↗</a
         >
+      </div>
+
+      <div v-if="canApprove" class="approval">
+        <label>Antworten auf offene Fragen oder zusätzliche Freigabehinweise</label>
+        <textarea
+          v-model="approvalNote"
+          rows="3"
+          placeholder="Optional: Annahmen bestätigen oder Fragen aus PLAN.md beantworten"
+        />
       </div>
 
       <nav class="tabs scroll-x">
@@ -133,12 +163,30 @@ function doCancel(): void {
           empty="Noch kein Plan."
         />
         <ArtifactViewer
+          v-else-if="tab === 'Freigabe'"
+          :content="artifact('approval')"
+          markdown
+          empty="Keine zusätzlichen Freigabehinweise."
+        />
+        <ArtifactViewer
+          v-else-if="tab === 'Implementierung'"
+          :content="artifact('implementation')"
+          markdown
+          empty="Noch kein Implementierungsbericht."
+        />
+        <ArtifactViewer
           v-else-if="tab === 'REVIEW.md'"
           :content="artifact('review')"
           markdown
-          empty="Kein Review (FAIL) vorhanden."
+          empty="Noch kein Review."
         />
         <GitDiffViewer v-else-if="tab === 'Diff'" :diff="artifact('diff')" />
+        <ArtifactViewer
+          v-else-if="tab === 'Handoff'"
+          :content="artifact('handoff')"
+          markdown
+          empty="Noch kein Handoff-Bericht."
+        />
         <TestRunPanel v-else-if="tab === 'Tests'" :test-runs="detail.testRuns" />
         <div v-else-if="tab === 'Fehler'" class="pad">
           <pre v-if="detail.lastError" class="err">{{ detail.lastError }}</pre>
@@ -152,6 +200,15 @@ function doCancel(): void {
           <div>
             <label>Branch</label><code>{{ detail.branch ?? '—' }}</code>
           </div>
+          <div>
+            <label>Basis-Commit</label><code>{{ detail.baseCommitSha ?? '—' }}</code>
+          </div>
+          <div>
+            <label>Head-Commit</label><code>{{ detail.headCommitSha ?? '—' }}</code>
+          </div>
+          <div><label>Basis veraltet</label>{{ detail.baseStale ? 'ja' : 'nein' }}</div>
+          <div><label>Nächste Phase</label>{{ detail.resumePhase ?? '—' }}</div>
+          <div><label>Plan freigegeben</label>{{ formatDateTime(detail.planApprovedAt) }}</div>
           <div>
             <label>Worktree</label><code>{{ detail.worktreePath ?? '—' }}</code>
           </div>
@@ -229,6 +286,17 @@ function doCancel(): void {
   flex-wrap: wrap;
   align-items: center;
   border-bottom: 1px solid var(--border);
+}
+.approval {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 10px 18px 12px;
+  border-bottom: 1px solid var(--border);
+}
+.approval label {
+  color: var(--text-dim);
+  font-size: 12px;
 }
 .linear-link {
   margin-left: auto;

@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import fs from 'node:fs';
 import type { LinearClientLike } from '@agent/linear';
 import { createHarness, type Harness } from './helpers/harness.js';
 
@@ -62,6 +63,8 @@ describe('REST API', () => {
     });
     expect(ok.statusCode).toBe(201);
     expect(ok.json().project.id).toBeTruthy();
+    expect(ok.json().project.autonomyMode).toBe('approve_plan');
+    expect(ok.json().project.testExecutionMode).toBe('sandboxed');
   });
 
   it('lehnt Projekt mit nicht existierendem Repository-Pfad ab', async () => {
@@ -130,6 +133,51 @@ describe('REST API', () => {
     await harness.waitForState(job.id);
   });
 
+  it('wartet bei konfigurierter Planfreigabe und setzt nach Zustimmung am Checkpoint fort', async () => {
+    harness = await createHarness();
+    harness.ctx.repos.projects.update(harness.projectId, { autonomyMode: 'approve_plan' });
+    const job = harness.seedJob('APP-510');
+    await harness.ctx.jobs.start(job.id);
+    expect(await harness.waitForState(job.id, ['awaiting_plan_approval'])).toBe(
+      'awaiting_plan_approval',
+    );
+    expect(JSON.parse(fs.readFileSync(harness.stateFile, 'utf8')).codex).toBeUndefined();
+
+    const approval = await harness.app.inject({
+      method: 'POST',
+      url: `/api/jobs/${job.id}/approve-plan`,
+      payload: { note: 'Annahme bestätigt.' },
+    });
+    expect(approval.statusCode).toBe(200);
+    const resumed = await harness.waitForState(job.id, [
+      'ready_for_human',
+      'failed',
+      'needs_human',
+    ]);
+    expect(resumed, harness.ctx.repos.jobs.get(job.id)?.lastError ?? '').toBe('ready_for_human');
+    const finished = harness.ctx.repos.jobs.get(job.id)!;
+    expect(finished.planApprovedAt).not.toBeNull();
+    expect(
+      harness.ctx.repos.artifacts
+        .listByJob(job.id)
+        .some((artifact) => artifact.type === 'approval'),
+    ).toBe(true);
+  });
+
+  it('trennt Agentenfertigstellung von menschlich bestätigtem done', async () => {
+    harness = await createHarness();
+    const job = harness.seedJob('APP-511');
+    await harness.ctx.jobs.start(job.id);
+    await harness.waitForState(job.id, ['ready_for_human']);
+    const done = await harness.app.inject({
+      method: 'PATCH',
+      url: `/api/jobs/${job.id}/state`,
+      payload: { state: 'done' },
+    });
+    expect(done.statusCode).toBe(200);
+    expect(done.json().job.state).toBe('done');
+  });
+
   it('liefert 404 für unbekannte Jobs und 400 für ungültigen Ziel-Zustand', async () => {
     harness = await createHarness();
     expect((await harness.app.inject({ method: 'GET', url: '/api/jobs/nope' })).statusCode).toBe(
@@ -148,7 +196,7 @@ describe('REST API', () => {
     harness = await createHarness({ reviewSequence: 'PASS' });
     const job = harness.seedJob('APP-12');
     await harness.ctx.jobs.start(job.id);
-    await harness.waitForState(job.id, ['done']);
+    await harness.waitForState(job.id, ['ready_for_human']);
 
     const logs = await harness.app.inject({ method: 'GET', url: `/api/jobs/${job.id}/logs` });
     expect(logs.statusCode).toBe(200);

@@ -31,12 +31,39 @@ export function branchForIdentifier(identifier: string): string {
   return `agent/${identifierToSlug(identifier)}`;
 }
 
+export function jobSuffix(jobId: string): string {
+  const normalized = jobId.trim().toLowerCase();
+  if (!/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/.test(normalized)) {
+    throw new PathValidationError(`Ungültige Job-ID für Git-Pfad: ${jobId}`);
+  }
+  return normalized.replaceAll('-', '');
+}
+
+export function branchForJob(identifier: string, jobId: string): string {
+  return `agent/${identifierToSlug(identifier)}/${jobSuffix(jobId)}`;
+}
+
 /**
  * Berechnet den Worktree-Pfad und garantiert, dass er innerhalb des
  * konfigurierten Worktree-Roots bleibt (Pfad-Traversal-Schutz).
  */
 export function worktreePathFor(worktreeRoot: string, identifier: string): string {
   const slug = identifierToSlug(identifier);
+  const resolved = path.resolve(worktreeRoot, slug);
+  if (!isPathInside(worktreeRoot, resolved)) {
+    throw new PathValidationError(
+      `Worktree-Pfad ${resolved} liegt außerhalb von ${path.resolve(worktreeRoot)}`,
+    );
+  }
+  return resolved;
+}
+
+export function worktreePathForJob(
+  worktreeRoot: string,
+  identifier: string,
+  jobId: string,
+): string {
+  const slug = `${identifierToSlug(identifier)}-${jobSuffix(jobId)}`;
   const resolved = path.resolve(worktreeRoot, slug);
   if (!isPathInside(worktreeRoot, resolved)) {
     throw new PathValidationError(

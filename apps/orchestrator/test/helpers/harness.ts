@@ -10,7 +10,14 @@ import { bootstrap } from '../../src/server.js';
 import type { AppContext } from '../../src/context.js';
 import type { JobState, JobSummary } from '@agent/shared';
 
-const TERMINAL: JobState[] = ['done', 'failed', 'needs_human', 'paused'];
+const TERMINAL: JobState[] = [
+  'ready_for_human',
+  'done',
+  'failed',
+  'needs_human',
+  'paused',
+  'awaiting_plan_approval',
+];
 
 export interface HarnessOptions {
   reviewSequence?: string;
@@ -25,6 +32,8 @@ export interface HarnessOptions {
   /** Fake-Linear-Client für Import-Tests. */
   linearClient?: LinearClientLike;
   linearWriteComments?: boolean;
+  planRiskLevel?: 'low' | 'medium' | 'high';
+  planQuestions?: string[];
 }
 
 export interface Harness {
@@ -59,13 +68,20 @@ export function nodeCommand(code: string): string {
 }
 
 /** Fake-Claude als eigenständiges, per Test konfiguriertes Node-Skript. */
-function claudeScript(stateFile: string, reviewSequence: string): string {
+function claudeScript(
+  stateFile: string,
+  reviewSequence: string,
+  planRiskLevel: 'low' | 'medium' | 'high',
+  planQuestions: string[],
+): string {
   return `#!/usr/bin/env node
 import fs from 'node:fs';
 const STATE = ${JSON.stringify(stateFile)};
 const SEQ = ${JSON.stringify(reviewSequence)}.split(',').map((s) => s.trim());
+const PLAN_RISK = ${JSON.stringify(planRiskLevel)};
+const PLAN_QUESTIONS = ${JSON.stringify(planQuestions)};
 const prompt = process.argv[process.argv.length - 1] ?? '';
-const isReview = prompt.includes('Code-Reviewer') || prompt.includes('VERDICT: PASS');
+const isReview = prompt.includes('Code-Reviewer') || prompt.includes('openAcceptanceCriteria');
 const load = () => { try { return JSON.parse(fs.readFileSync(STATE, 'utf8')); } catch { return {}; } };
 const save = (s) => fs.writeFileSync(STATE, JSON.stringify(s));
 let result;
@@ -73,11 +89,11 @@ if (isReview) {
   const s = load();
   const idx = s.review ?? 0; s.review = idx + 1; save(s);
   const verdict = SEQ[Math.min(idx, SEQ.length - 1)];
-  result = verdict === 'PASS'
-    ? 'VERDICT: PASS\\n\\nAlle Akzeptanzkriterien erfuellt.'
-    : ['VERDICT: FAIL','','# Review-Ergebnis','','VERDICT: FAIL','','## Zusammenfassung','Noch nicht fertig.','','## Gefundene Probleme','','### Problem 1','- Schweregrad: hoch','- Datei: impl.txt','- Beobachtung: Fix fehlt','- Erforderliche Korrektur: fixed.txt anlegen'].join('\\n');
+  result = JSON.stringify(verdict === 'PASS'
+    ? { version: 1, verdict: 'PASS', summary: 'Alle Akzeptanzkriterien erfuellt.', findings: [], openAcceptanceCriteria: [] }
+    : { version: 1, verdict: 'FAIL', summary: 'Noch nicht fertig.', findings: [{ severity: 'high', file: 'impl.txt', location: null, observation: 'Fix fehlt', requiredFix: 'fixed.txt anlegen', verification: 'Tests erneut ausfuehren' }], openAcceptanceCriteria: [] });
 } else {
-  result = ['# Ziel','x','# Akzeptanzkriterien','- x','# Betroffene Architektur','x','# Relevante Dateien','- impl.txt','# Implementierungsschritte','1. x','# Teststrategie','x','# Risiken','x','# Annahmen','x','# Nicht-Ziele','x'].join('\\n');
+  result = JSON.stringify({ version: 1, goal: 'x', acceptanceCriteria: ['x'], relevantFiles: ['impl.txt'], steps: ['x'], testStrategy: ['x'], risks: [], riskLevel: PLAN_RISK, assumptions: [], nonGoals: [], questions: PLAN_QUESTIONS });
 }
 process.stdout.write(JSON.stringify({ type: 'result', result }));
 `;
@@ -105,7 +121,7 @@ if (!NO_CHANGE) {
     fs.writeFileSync(path.join(cwd, 'fixed.txt'), 'fixed\\n');
   }
 }
-if (lastMsg) fs.writeFileSync(lastMsg, 'Codex-Lauf ' + run);
+if (lastMsg) fs.writeFileSync(lastMsg, JSON.stringify({ version: 1, summary: 'Codex-Lauf ' + run, changedFiles: NO_CHANGE ? [] : ['impl.txt'], planDeviations: [], testsRun: [] }));
 process.stdout.write('codex fake run ' + run + '\\n');
 `;
 }
@@ -129,7 +145,15 @@ export async function createHarness(options: HarnessOptions = {}): Promise<Harne
 
   const claudeBin = path.join(binDir, 'fake-claude.mjs');
   const codexBin = path.join(binDir, 'fake-codex.mjs');
-  fs.writeFileSync(claudeBin, claudeScript(stateFile, options.reviewSequence ?? 'PASS'));
+  fs.writeFileSync(
+    claudeBin,
+    claudeScript(
+      stateFile,
+      options.reviewSequence ?? 'PASS',
+      options.planRiskLevel ?? 'low',
+      options.planQuestions ?? [],
+    ),
+  );
   fs.writeFileSync(
     codexBin,
     codexScript(stateFile, {
@@ -152,6 +176,7 @@ export async function createHarness(options: HarnessOptions = {}): Promise<Harne
     agents: {
       claudeBin,
       codexBin,
+      srtBin: 'srt',
       claudeModel: undefined,
       codexModel: undefined,
       claudeMaxBudgetUsd: undefined,
@@ -188,6 +213,12 @@ export async function createHarness(options: HarnessOptions = {}): Promise<Harne
     baseBranch: 'main',
     worktreeRoot,
     commands: testCommand ? { test: testCommand } : {},
+    autonomyMode: 'full_auto',
+    testExecutionMode: 'trusted',
+    baselineChecks: false,
+    maxChangedFiles: 100,
+    maxDiffBytes: 1024 * 1024,
+    blockedPaths: [],
     active: true,
   });
 

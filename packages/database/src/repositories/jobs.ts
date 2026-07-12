@@ -1,4 +1,4 @@
-import type { AgentName, Job, JobState, JobSummary } from '@agent/shared';
+import type { AgentName, Job, JobState, JobSummary, PipelinePhase } from '@agent/shared';
 import type { AppDatabase } from '../db.js';
 import { newId, nowIso, toBool, toInt } from '../util.js';
 import { mapTicket, type TicketRow } from './tickets.js';
@@ -12,6 +12,11 @@ export interface JobRow {
   worktree_path: string | null;
   branch: string | null;
   base_branch: string;
+  base_commit_sha: string | null;
+  head_commit_sha: string | null;
+  base_stale: number;
+  resume_phase: string | null;
+  plan_approved_at: string | null;
   current_agent: string | null;
   pause_requested: number;
   active_pgid: number | null;
@@ -33,6 +38,11 @@ export function mapJob(row: JobRow): Job {
     worktreePath: row.worktree_path,
     branch: row.branch,
     baseBranch: row.base_branch,
+    baseCommitSha: row.base_commit_sha,
+    headCommitSha: row.head_commit_sha,
+    baseStale: toBool(row.base_stale),
+    resumePhase: row.resume_phase as PipelinePhase | null,
+    planApprovedAt: row.plan_approved_at,
     currentAgent: row.current_agent as AgentName | null,
     pauseRequested: toBool(row.pause_requested),
     activePgid: row.active_pgid,
@@ -56,6 +66,11 @@ export interface JobPatch {
   reviewLoopCount?: number;
   worktreePath?: string | null;
   branch?: string | null;
+  baseCommitSha?: string | null;
+  headCommitSha?: string | null;
+  baseStale?: boolean;
+  resumePhase?: PipelinePhase | null;
+  planApprovedAt?: string | null;
   currentAgent?: AgentName | null;
   pauseRequested?: boolean;
   activePgid?: number | null;
@@ -70,6 +85,11 @@ const JOB_PATCH_COLUMNS: Record<keyof JobPatch, string> = {
   reviewLoopCount: 'review_loop_count',
   worktreePath: 'worktree_path',
   branch: 'branch',
+  baseCommitSha: 'base_commit_sha',
+  headCommitSha: 'head_commit_sha',
+  baseStale: 'base_stale',
+  resumePhase: 'resume_phase',
+  planApprovedAt: 'plan_approved_at',
   currentAgent: 'current_agent',
   pauseRequested: 'pause_requested',
   activePgid: 'active_pgid',
@@ -82,7 +102,8 @@ const JOB_PATCH_COLUMNS: Record<keyof JobPatch, string> = {
 const SUMMARY_SELECT = `
 SELECT
   j.id, j.ticket_id, j.project_id, j.state, j.review_loop_count, j.worktree_path, j.branch,
-  j.base_branch, j.current_agent, j.pause_requested, j.active_pgid, j.deadline_at, j.last_error,
+  j.base_branch, j.base_commit_sha, j.head_commit_sha, j.base_stale, j.resume_phase,
+  j.plan_approved_at, j.current_agent, j.pause_requested, j.active_pgid, j.deadline_at, j.last_error,
   j.started_at, j.finished_at, j.created_at, j.updated_at,
   t.id AS t_id, t.project_id AS t_project_id, t.linear_issue_id AS t_linear_issue_id,
   t.identifier AS t_identifier, t.title AS t_title, t.description AS t_description,
@@ -213,5 +234,12 @@ export class JobsRepository {
       .prepare(`SELECT * FROM jobs WHERE worktree_path = ? AND state IN (${placeholders}) LIMIT 1`)
       .get(worktreePath, ...states) as JobRow | undefined;
     return row ? mapJob(row) : undefined;
+  }
+
+  listActivePgids(): Array<{ jobId: string; pgid: number }> {
+    const rows = this.db
+      .prepare('SELECT id, active_pgid FROM jobs WHERE active_pgid IS NOT NULL')
+      .all() as Array<{ id: string; active_pgid: number }>;
+    return rows.map((row) => ({ jobId: row.id, pgid: row.active_pgid }));
   }
 }

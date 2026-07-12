@@ -74,6 +74,12 @@ describe('projectCreateSchema', () => {
     });
     expect(parsed.baseBranch).toBe('main');
     expect(parsed.commands).toEqual({});
+    expect(parsed.autonomyMode).toBe('approve_plan');
+    expect(parsed.testExecutionMode).toBe('sandboxed');
+    expect(parsed.baselineChecks).toBe(true);
+    expect(parsed.maxChangedFiles).toBe(100);
+    expect(parsed.maxDiffBytes).toBe(1024 * 1024);
+    expect(parsed.blockedPaths).toEqual([]);
     expect(parsed.active).toBe(true);
   });
 
@@ -85,5 +91,19 @@ describe('projectCreateSchema', () => {
       commands: { test: 'pnpm test; curl evil' },
     });
     expect(res.success).toBe(false);
+  });
+
+  it('validiert gesperrte Repository-Pfade', () => {
+    const base = {
+      name: 'Demo',
+      repositoryPath: '/repos/demo',
+      worktreeRoot: '/worktrees/demo',
+    };
+    expect(
+      projectCreateSchema.safeParse({ ...base, blockedPaths: ['.github/workflows'] }).success,
+    ).toBe(true);
+    expect(projectCreateSchema.safeParse({ ...base, blockedPaths: ['../secrets'] }).success).toBe(
+      false,
+    );
   });
 });

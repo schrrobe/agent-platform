@@ -1,5 +1,10 @@
 import type { FastifyInstance } from 'fastify';
-import { importRequestSchema, logsQuerySchema, statePatchSchema } from '@agent/shared';
+import {
+  importRequestSchema,
+  logsQuerySchema,
+  planApprovalSchema,
+  statePatchSchema,
+} from '@agent/shared';
 import type { AppContext } from '../../context.js';
 import { ApiError, parseBody } from '../errors.js';
 
@@ -31,6 +36,12 @@ export function registerJobRoutes(app: FastifyInstance, ctx: AppContext): void {
   app.post('/api/jobs/:id/retry', async (request) => {
     const { id } = request.params as { id: string };
     return { job: await ctx.jobs.retry(id) };
+  });
+
+  app.post('/api/jobs/:id/approve-plan', async (request) => {
+    const { id } = request.params as { id: string };
+    const input = parseBody(planApprovalSchema, request.body ?? {});
+    return { job: await ctx.jobs.approvePlan(id, input.note) };
   });
 
   app.post('/api/jobs/:id/cancel', async (request) => {
