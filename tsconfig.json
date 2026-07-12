@@ -1,0 +1,12 @@
+{
+  "files": [],
+  "references": [
+    { "path": "packages/shared" },
+    { "path": "packages/database" },
+    { "path": "packages/workflow" },
+    { "path": "packages/linear" },
+    { "path": "packages/git" },
+    { "path": "packages/agents" },
+    { "path": "apps/orchestrator" }
+  ]
+}
