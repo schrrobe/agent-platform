@@ -1,0 +1,265 @@
+import { beforeEach, describe, expect, it } from 'vitest';
+import { openDatabase, migrate, createRepositories, type Repositories } from '../src/index.js';
+import type { AppDatabase } from '../src/db.js';
+
+function freshDb(): { db: AppDatabase; repos: Repositories } {
+  const db = openDatabase(':memory:');
+  migrate(db);
+  return { db, repos: createRepositories(db) };
+}
+
+function seedProject(repos: Repositories) {
+  return repos.projects.insert({
+    name: 'Demo',
+    repositoryPath: '/repos/demo',
+    baseBranch: 'main',
+    worktreeRoot: '/worktrees/demo',
+    commands: { test: 'pnpm test' },
+    active: true,
+  });
+}
+
+function seedTicket(repos: Repositories, projectId: string) {
+  return repos.tickets.upsert({
+    projectId,
+    linearIssueId: 'lin-uuid-1',
+    identifier: 'APP-123',
+    title: 'Button reparieren',
+    description: 'Der Button tut nichts.',
+    url: 'https://linear.app/demo/issue/APP-123',
+    teamKey: 'APP',
+    teamName: 'App-Team',
+    priority: 2,
+    priorityLabel: 'High',
+    labels: ['bug'],
+    linearState: 'Todo',
+    linearCreatedAt: '2026-07-01T10:00:00.000Z',
+    linearUpdatedAt: '2026-07-02T10:00:00.000Z',
+  });
+}
+
+describe('migrate', () => {
+  it('legt alle Tabellen an und ist idempotent', () => {
+    const db = openDatabase(':memory:');
+    const first = migrate(db);
+    expect(first.applied).toContain('001_init.sql');
+
+    const tables = (
+      db.prepare("SELECT name FROM sqlite_master WHERE type = 'table'").all() as Array<{
+        name: string;
+      }>
+    ).map((row) => row.name);
+    for (const table of [
+      'projects',
+      'tickets',
+      'jobs',
+      'job_events',
+      'agent_runs',
+      'artifacts',
+      'review_iterations',
+      'test_runs',
+      'settings',
+      'schema_migrations',
+    ]) {
+      expect(tables).toContain(table);
+    }
+
+    const second = migrate(db);
+    expect(second.applied).toHaveLength(0);
+  });
+});
+
+describe('Repositories', () => {
+  let db: AppDatabase;
+  let repos: Repositories;
+
+  beforeEach(() => {
+    ({ db, repos } = freshDb());
+  });
+
+  it('Projekt-CRUD inkl. Kommando-JSON-Roundtrip', () => {
+    const project = seedProject(repos);
+    expect(project.commands).toEqual({ test: 'pnpm test' });
+    expect(project.active).toBe(true);
+
+    const updated = repos.projects.update(project.id, {
+      commands: { test: 'pnpm test', lint: 'pnpm lint' },
+      active: false,
+    });
+    expect(updated.commands.lint).toBe('pnpm lint');
+    expect(updated.active).toBe(false);
+    expect(repos.projects.list()).toHaveLength(1);
+  });
+
+  it('Ticket-Upsert: Insert beim ersten, Update beim zweiten Import', () => {
+    const project = seedProject(repos);
+    const ticket = seedTicket(repos, project.id);
+    expect(ticket.labels).toEqual(['bug']);
+
+    const again = repos.tickets.upsert({
+      projectId: project.id,
+      linearIssueId: 'lin-uuid-1',
+      identifier: 'APP-123',
+      title: 'Button reparieren (aktualisiert)',
+      description: 'Neu.',
+      url: ticket.url,
+      teamKey: 'APP',
+      teamName: 'App-Team',
+      priority: 1,
+      priorityLabel: 'Urgent',
+      labels: ['bug', 'ui'],
+      linearState: 'In Progress',
+      linearCreatedAt: ticket.linearCreatedAt,
+      linearUpdatedAt: '2026-07-03T10:00:00.000Z',
+    });
+    expect(again.id).toBe(ticket.id);
+    expect(again.title).toContain('aktualisiert');
+    expect(repos.tickets.list()).toHaveLength(1);
+    expect(repos.tickets.getByIdentifier('app-123')?.id).toBe(ticket.id);
+  });
+
+  it('Job-Lifecycle: Insert in inbox, Patch, Summary-Join', () => {
+    const project = seedProject(repos);
+    const ticket = seedTicket(repos, project.id);
+    const job = repos.jobs.insert({
+      ticketId: ticket.id,
+      projectId: project.id,
+      baseBranch: 'main',
+    });
+    expect(job.state).toBe('inbox');
+    expect(job.pauseRequested).toBe(false);
+
+    const patched = repos.jobs.update(job.id, {
+      state: 'agent_ready',
+      worktreePath: '/worktrees/demo/app-123',
+      branch: 'agent/app-123',
+      pauseRequested: true,
+      lastError: null,
+    });
+    expect(patched.state).toBe('agent_ready');
+    expect(patched.pauseRequested).toBe(true);
+    expect(patched.branch).toBe('agent/app-123');
+
+    const summary = repos.jobs.getSummary(job.id);
+    expect(summary?.ticket.identifier).toBe('APP-123');
+    expect(summary?.projectName).toBe('Demo');
+    expect(summary?.repositoryPath).toBe('/repos/demo');
+    expect(repos.jobs.listSummaries()).toHaveLength(1);
+
+    expect(repos.jobs.listByStates(['agent_ready'])).toHaveLength(1);
+    expect(repos.jobs.listByStates(['done'])).toHaveLength(0);
+    expect(
+      repos.jobs.findByProjectInStates(project.id, ['agent_ready'])?.id,
+    ).toBe(job.id);
+  });
+
+  it('Job-Events: monoton steigende Sequenz-IDs', () => {
+    const project = seedProject(repos);
+    const ticket = seedTicket(repos, project.id);
+    const job = repos.jobs.insert({ ticketId: ticket.id, projectId: project.id, baseBranch: 'main' });
+
+    const first = repos.jobEvents.append({ jobId: job.id, type: 'job.created' });
+    const second = repos.jobEvents.append({
+      jobId: job.id,
+      type: 'job.state_changed',
+      fromState: 'inbox',
+      toState: 'agent_ready',
+      data: { manual: true },
+    });
+    expect(second.id).toBeGreaterThan(first.id);
+    expect(repos.jobEvents.lastSeq()).toBe(second.id);
+
+    const events = repos.jobEvents.listByJob(job.id);
+    expect(events).toHaveLength(2);
+    expect(events[1]?.data).toEqual({ manual: true });
+
+    const after = repos.jobEvents.listByJob(job.id, { afterId: first.id });
+    expect(after).toHaveLength(1);
+    expect(after[0]?.type).toBe('job.state_changed');
+  });
+
+  it('AgentRuns, Artifacts, ReviewIterations, TestRuns', () => {
+    const project = seedProject(repos);
+    const ticket = seedTicket(repos, project.id);
+    const job = repos.jobs.insert({ ticketId: ticket.id, projectId: project.id, baseBranch: 'main' });
+
+    const run = repos.agentRuns.insert({ jobId: job.id, phase: 'plan', agent: 'claude' });
+    expect(run.status).toBe('running');
+    repos.agentRuns.update(run.id, { pgid: 4321 });
+    expect(repos.agentRuns.listRunningPgids()).toEqual([
+      { runId: run.id, jobId: job.id, pgid: 4321 },
+    ]);
+
+    const done = repos.agentRuns.update(run.id, {
+      status: 'completed',
+      exitCode: 0,
+      output: '# Ziel …',
+      finishedAt: '2026-07-12T12:00:00.000Z',
+    });
+    expect(done.status).toBe('completed');
+    expect(repos.agentRuns.listRunningPgids()).toHaveLength(0);
+
+    const artifact = repos.artifacts.insert({
+      jobId: job.id,
+      agentRunId: run.id,
+      type: 'plan',
+      path: '/worktrees/demo/app-123/.agent/PLAN.md',
+      content: '# Ziel …',
+    });
+    expect(repos.artifacts.latestByType(job.id, 'plan')?.id).toBe(artifact.id);
+
+    const review = repos.reviewIterations.insert({
+      jobId: job.id,
+      iteration: 1,
+      verdict: 'FAIL',
+      artifactId: artifact.id,
+    });
+    expect(repos.reviewIterations.listByJob(job.id)).toEqual([review]);
+
+    const testRun = repos.testRuns.insert({
+      jobId: job.id,
+      iteration: 1,
+      commandKey: 'test',
+      command: 'pnpm test',
+    });
+    const finished = repos.testRuns.update(testRun.id, {
+      status: 'failed',
+      exitCode: 1,
+      stdout: '1 failing',
+      durationMs: 1200,
+      finishedAt: '2026-07-12T12:01:00.000Z',
+    });
+    expect(finished.exitCode).toBe(1);
+    expect(repos.testRuns.listByJob(job.id)).toHaveLength(1);
+  });
+
+  it('failAllRunning markiert laufende AgentRuns als canceled', () => {
+    const project = seedProject(repos);
+    const ticket = seedTicket(repos, project.id);
+    const job = repos.jobs.insert({ ticketId: ticket.id, projectId: project.id, baseBranch: 'main' });
+    repos.agentRuns.insert({ jobId: job.id, phase: 'plan', agent: 'claude' });
+    repos.agentRuns.insert({ jobId: job.id, phase: 'implement', agent: 'codex' });
+
+    const changed = repos.agentRuns.failAllRunning('Durch Neustart unterbrochen');
+    expect(changed).toBe(2);
+    const runs = repos.agentRuns.listByJob(job.id);
+    expect(runs.every((r) => r.status === 'canceled')).toBe(true);
+  });
+
+  it('Settings: get/set/all', () => {
+    repos.settings.set('theme', 'dark');
+    repos.settings.set('theme', 'light');
+    expect(repos.settings.get('theme')).toBe('light');
+    expect(repos.settings.all()).toEqual({ theme: 'light' });
+  });
+
+  it('Fremdschlüssel werden erzwungen', () => {
+    const project = seedProject(repos);
+    seedTicket(repos, project.id);
+    expect(() => repos.projects.delete(project.id)).toThrow();
+    expect(() =>
+      repos.jobs.insert({ ticketId: 'fehlt', projectId: project.id, baseBranch: 'main' }),
+    ).toThrow();
+    expect(db.pragma('foreign_keys', { simple: true })).toBe(1);
+  });
+});
