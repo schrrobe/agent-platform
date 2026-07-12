@@ -20,17 +20,20 @@ export type JobState = (typeof JOB_STATES)[number];
 /**
  * Erlaubte Übergänge der deterministischen State Machine.
  *
- * Abweichungen von der Spezifikations-Beispiel-Map (siehe ADR-008 / ADR-007):
+ * Abweichungen von der Spezifikations-Beispiel-Map (siehe ADR-008 / ADR-007 / ADR-018):
  * - `testing → needs_human`: am Rework-Limit endet der Job immer beim Menschen,
  *   `failed` bleibt Infrastrukturfehlern vorbehalten.
+ * - `planning → needs_human` / `implementing → needs_human`: liefert ein Agent kein
+ *   verwertbares Ergebnis (leerer Plan, keine Dateiänderung), eskaliert die Engine
+ *   zum Menschen statt still zu scheitern.
  * - `testing → paused` und `review → paused`: Pause ist ein Soft-Request, der an
  *   Phasengrenzen greift — auch nach Test- und Review-Phase.
  */
 export const TRANSITIONS: Readonly<Record<JobState, readonly JobState[]>> = {
   inbox: ['agent_ready', 'paused'],
-  agent_ready: ['planning', 'paused'],
-  planning: ['implementing', 'failed', 'paused'],
-  implementing: ['testing', 'failed', 'paused'],
+  agent_ready: ['planning', 'failed', 'paused'],
+  planning: ['implementing', 'needs_human', 'failed', 'paused'],
+  implementing: ['testing', 'needs_human', 'failed', 'paused'],
   testing: ['review', 'rework', 'needs_human', 'failed', 'paused'],
   review: ['done', 'rework', 'needs_human', 'failed', 'paused'],
   rework: ['implementing', 'paused'],

@@ -1,0 +1,40 @@
+{
+  "name": "@agent/orchestrator",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "main": "./dist/index.js",
+  "scripts": {
+    "dev": "tsx watch src/index.ts",
+    "start": "node dist/index.js",
+    "build": "tsc -b tsconfig.build.json",
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "test": "vitest run",
+    "lint": "eslint .",
+    "format": "prettier --write .",
+    "format:check": "prettier --check ."
+  },
+  "dependencies": {
+    "@agent/agents": "workspace:*",
+    "@agent/database": "workspace:*",
+    "@agent/git": "workspace:*",
+    "@agent/linear": "workspace:*",
+    "@agent/shared": "workspace:*",
+    "@agent/workflow": "workspace:*",
+    "@fastify/cors": "catalog:",
+    "@fastify/static": "catalog:",
+    "@fastify/websocket": "catalog:",
+    "fastify": "catalog:",
+    "pino": "catalog:",
+    "pino-pretty": "catalog:",
+    "zod": "catalog:"
+  },
+  "devDependencies": {
+    "@types/node": "catalog:",
+    "@types/ws": "^8.18.1",
+    "tsx": "catalog:",
+    "typescript": "catalog:",
+    "vitest": "catalog:",
+    "ws": "^8.21.0"
+  }
+}

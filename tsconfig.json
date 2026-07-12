@@ -7,6 +7,6 @@
     { "path": "packages/linear" },
     { "path": "packages/git" },
     { "path": "packages/agents" },
-    { "path": "apps/orchestrator" }
+    { "path": "apps/orchestrator/tsconfig.build.json" }
   ]
 }

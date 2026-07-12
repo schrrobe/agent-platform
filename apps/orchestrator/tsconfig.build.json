@@ -1,0 +1,16 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "outDir": "dist",
+    "rootDir": "src"
+  },
+  "include": ["src"],
+  "references": [
+    { "path": "../../packages/shared" },
+    { "path": "../../packages/database" },
+    { "path": "../../packages/workflow" },
+    { "path": "../../packages/linear" },
+    { "path": "../../packages/git" },
+    { "path": "../../packages/agents" }
+  ]
+}

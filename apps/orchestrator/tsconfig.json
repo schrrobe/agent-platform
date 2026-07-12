@@ -1,0 +1,20 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "noEmit": true,
+    "composite": false,
+    "declaration": false,
+    "declarationMap": false,
+    "sourceMap": false,
+    "types": ["node"],
+    "paths": {
+      "@agent/shared": ["../../packages/shared/src/index.ts"],
+      "@agent/database": ["../../packages/database/src/index.ts"],
+      "@agent/workflow": ["../../packages/workflow/src/index.ts"],
+      "@agent/linear": ["../../packages/linear/src/index.ts"],
+      "@agent/git": ["../../packages/git/src/index.ts"],
+      "@agent/agents": ["../../packages/agents/src/index.ts"]
+    }
+  },
+  "include": ["src", "test"]
+}
