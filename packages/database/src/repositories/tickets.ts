@@ -132,15 +132,14 @@ export class TicketsRepository {
 
   get(id: string): Ticket | undefined {
     const row = this.db.prepare('SELECT * FROM tickets WHERE id = ?').get(id) as
-      | TicketRow
-      | undefined;
+      TicketRow | undefined;
     return row ? mapTicket(row) : undefined;
   }
 
   getByLinearIssueId(linearIssueId: string): Ticket | undefined {
-    const row = this.db.prepare('SELECT * FROM tickets WHERE linear_issue_id = ?').get(
-      linearIssueId,
-    ) as TicketRow | undefined;
+    const row = this.db
+      .prepare('SELECT * FROM tickets WHERE linear_issue_id = ?')
+      .get(linearIssueId) as TicketRow | undefined;
     return row ? mapTicket(row) : undefined;
   }
 

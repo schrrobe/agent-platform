@@ -1,11 +1,6 @@
 import path from 'node:path';
 import type { Logger } from 'pino';
-import {
-  ClaudeCodeAdapter,
-  CodexCliAdapter,
-  ProcessExecutor,
-  buildChildEnv,
-} from '@agent/agents';
+import { ClaudeCodeAdapter, CodexCliAdapter, ProcessExecutor, buildChildEnv } from '@agent/agents';
 import { GitService } from '@agent/git';
 import { LinearService } from '@agent/linear';
 import { createRepositories, type AppDatabase, type Repositories } from '@agent/database';

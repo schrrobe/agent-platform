@@ -97,10 +97,7 @@ describe('ProcessExecutor', () => {
   it('begrenzt die Ausgabegröße und behält Kopf und Tail', async () => {
     const handle = executor.run({
       command: NODE,
-      args: [
-        '-e',
-        'for (let i=0;i<20000;i++) console.log("ZEILE_"+i)',
-      ],
+      args: ['-e', 'for (let i=0;i<20000;i++) console.log("ZEILE_"+i)'],
       cwd: process.cwd(),
       maxOutputBytes: 4096,
     });
@@ -113,19 +110,19 @@ describe('ProcessExecutor', () => {
   });
 
   it('übergibt stdin und meldet Prozessstartfehler statt zu werfen', async () => {
-    const ok = await executor
-      .run({
-        command: NODE,
-        args: ['-e', 'process.stdin.pipe(process.stdout)'],
-        cwd: process.cwd(),
-        stdin: 'echo-mich',
-      })
-      .result;
+    const ok = await executor.run({
+      command: NODE,
+      args: ['-e', 'process.stdin.pipe(process.stdout)'],
+      cwd: process.cwd(),
+      stdin: 'echo-mich',
+    }).result;
     expect(ok.stdout).toContain('echo-mich');
 
-    const missing = await executor
-      .run({ command: '/nicht/vorhanden/xyz', args: [], cwd: process.cwd() })
-      .result;
+    const missing = await executor.run({
+      command: '/nicht/vorhanden/xyz',
+      args: [],
+      cwd: process.cwd(),
+    }).result;
     expect(missing.exitCode).toBeNull();
     expect(missing.stderr).toContain('fehlgeschlagen');
   });

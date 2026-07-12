@@ -40,8 +40,6 @@ describe('worktreePathFor', () => {
   });
 
   it('kann durch Identifier nicht aus dem Root ausbrechen', () => {
-    expect(() => worktreePathFor('/worktrees/demo', '../../APP-123')).toThrow(
-      PathValidationError,
-    );
+    expect(() => worktreePathFor('/worktrees/demo', '../../APP-123')).toThrow(PathValidationError);
   });
 });

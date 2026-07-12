@@ -116,7 +116,8 @@ export async function createHarness(options: HarnessOptions = {}): Promise<Harne
   const worktreeRoot = path.join(tmp, 'worktrees');
   const dataDir = path.join(tmp, 'data');
   const binDir = path.join(tmp, 'bin');
-  for (const dir of [repoDir, worktreeRoot, dataDir, binDir]) fs.mkdirSync(dir, { recursive: true });
+  for (const dir of [repoDir, worktreeRoot, dataDir, binDir])
+    fs.mkdirSync(dir, { recursive: true });
 
   git(repoDir, ['init', '-b', 'main']);
   fs.writeFileSync(path.join(repoDir, 'README.md'), '# Fixture\n');
@@ -131,7 +132,10 @@ export async function createHarness(options: HarnessOptions = {}): Promise<Harne
   fs.writeFileSync(claudeBin, claudeScript(stateFile, options.reviewSequence ?? 'PASS'));
   fs.writeFileSync(
     codexBin,
-    codexScript(stateFile, { fails: options.codexFails ?? false, noChange: options.codexNoChange ?? false }),
+    codexScript(stateFile, {
+      fails: options.codexFails ?? false,
+      noChange: options.codexNoChange ?? false,
+    }),
   );
   fs.chmodSync(claudeBin, 0o755);
   fs.chmodSync(codexBin, 0o755);
@@ -163,7 +167,10 @@ export async function createHarness(options: HarnessOptions = {}): Promise<Harne
   };
 
   const linear = options.linearClient
-    ? new LinearService({ client: options.linearClient, writeComments: options.linearWriteComments })
+    ? new LinearService({
+        client: options.linearClient,
+        writeComments: options.linearWriteComments,
+      })
     : undefined;
   const { app, ctx } = await bootstrap({
     config,
@@ -172,7 +179,9 @@ export async function createHarness(options: HarnessOptions = {}): Promise<Harne
   });
 
   const testCommand =
-    options.testCommand === null ? undefined : (options.testCommand ?? nodeCommand('process.exit(0)'));
+    options.testCommand === null
+      ? undefined
+      : (options.testCommand ?? nodeCommand('process.exit(0)'));
   const project = ctx.repos.projects.insert({
     name: 'E2E',
     repositoryPath: repoDir,
@@ -200,7 +209,11 @@ export async function createHarness(options: HarnessOptions = {}): Promise<Harne
       linearCreatedAt: null,
       linearUpdatedAt: null,
     });
-    const job = ctx.repos.jobs.insert({ ticketId: ticket.id, projectId: project.id, baseBranch: 'main' });
+    const job = ctx.repos.jobs.insert({
+      ticketId: ticket.id,
+      projectId: project.id,
+      baseBranch: 'main',
+    });
     return ctx.repos.jobs.getSummary(job.id)!;
   };
 

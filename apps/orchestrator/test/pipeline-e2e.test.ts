@@ -41,7 +41,14 @@ describe('Pipeline E2E (Fake-Claude/-Codex)', () => {
     const events = harness.ctx.repos.jobEvents.listByJob(job.id);
     const toStates = events.filter((e) => e.type === 'job.state_changed').map((e) => e.toState);
     expect(toStates).toEqual(
-      expect.arrayContaining(['agent_ready', 'planning', 'implementing', 'testing', 'review', 'done']),
+      expect.arrayContaining([
+        'agent_ready',
+        'planning',
+        'implementing',
+        'testing',
+        'review',
+        'done',
+      ]),
     );
 
     // Live-Logs wurden geschrieben.
@@ -71,7 +78,10 @@ describe('Pipeline E2E (Fake-Claude/-Codex)', () => {
   });
 
   it('eskaliert nach Erreichen des Review-Limits zu needs_human', async () => {
-    harness = await createHarness({ reviewSequence: 'FAIL,FAIL,FAIL,FAIL,FAIL', maxReviewLoops: 2 });
+    harness = await createHarness({
+      reviewSequence: 'FAIL,FAIL,FAIL,FAIL,FAIL',
+      maxReviewLoops: 2,
+    });
     const job = harness.seedJob('APP-3');
     await harness.ctx.jobs.start(job.id);
     const state = await harness.waitForState(job.id);
@@ -122,10 +132,14 @@ describe('Pipeline E2E (Fake-Claude/-Codex)', () => {
     harness = await createHarness({ reviewSequence: 'PASS' });
     const job = harness.seedJob('APP-7');
     const { execFileSync } = await import('node:child_process');
-    const before = execFileSync('git', ['rev-parse', 'main'], { cwd: harness.repoDir }).toString().trim();
+    const before = execFileSync('git', ['rev-parse', 'main'], { cwd: harness.repoDir })
+      .toString()
+      .trim();
     await harness.ctx.jobs.start(job.id);
     await harness.waitForState(job.id, ['done']);
-    const after = execFileSync('git', ['rev-parse', 'main'], { cwd: harness.repoDir }).toString().trim();
+    const after = execFileSync('git', ['rev-parse', 'main'], { cwd: harness.repoDir })
+      .toString()
+      .trim();
     expect(after).toBe(before);
   });
 });

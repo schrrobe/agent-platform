@@ -94,7 +94,10 @@ export class JobPipeline {
             maxReviewLoops: this.deps.config.limits.maxReviewLoops,
           });
           if (next === 'needs_human') {
-            await this.finishNeedsHuman(jobId, 'Pflichtprüfungen nach maximaler Schleifenzahl weiterhin rot');
+            await this.finishNeedsHuman(
+              jobId,
+              'Pflichtprüfungen nach maximaler Schleifenzahl weiterhin rot',
+            );
             return;
           }
           await this.enterRework(jobId, 'Tests fehlgeschlagen — Nacharbeit');
@@ -173,7 +176,13 @@ export class JobPipeline {
       throw new NeedsHumanOutcome(`Planung nicht verwertbar: ${result.error ?? 'leere Ausgabe'}`);
     }
     await this.writeArtifactFile(job, 'PLAN.md', result.output);
-    this.recordArtifact(jobId, result.runId, 'plan', path.join(this.worktree(job), AGENT_DIR, 'PLAN.md'), result.output);
+    this.recordArtifact(
+      jobId,
+      result.runId,
+      'plan',
+      path.join(this.worktree(job), AGENT_DIR, 'PLAN.md'),
+      result.output,
+    );
     log.info('PLAN.md erstellt');
   }
 
@@ -200,12 +209,18 @@ export class JobPipeline {
     }
     this.recordArtifact(jobId, result.runId, 'summary', null, result.output);
 
-    const commit = await this.deps.git.commitAll(worktree, `agent: ${ticket.identifier} Iteration ${iteration}`);
+    const commit = await this.deps.git.commitAll(
+      worktree,
+      `agent: ${ticket.identifier} Iteration ${iteration}`,
+    );
     const changed = await this.deps.git.changedFiles(worktree, project.baseBranch);
     if (!commit && changed.length === 0) {
       throw new NeedsHumanOutcome('Codex hat keine Dateiänderungen vorgenommen');
     }
-    this.system(jobId, `Implementierung committet (${changed.length} geänderte Dateien${commit ? `, ${commit.slice(0, 8)}` : ''})`);
+    this.system(
+      jobId,
+      `Implementierung committet (${changed.length} geänderte Dateien${commit ? `, ${commit.slice(0, 8)}` : ''})`,
+    );
     log.info({ changedFiles: changed.length }, 'Implementierung abgeschlossen');
   }
 
@@ -225,8 +240,17 @@ export class JobPipeline {
     }
     for (const key of configured) {
       const commandString = project.commands[key] as string;
-      const testRun = this.deps.repos.testRuns.insert({ jobId, iteration, commandKey: key, command: commandString });
-      this.deps.publisher.emit('test.started', jobId, { testRunId: testRun.id, commandKey: key, command: commandString });
+      const testRun = this.deps.repos.testRuns.insert({
+        jobId,
+        iteration,
+        commandKey: key,
+        command: commandString,
+      });
+      this.deps.publisher.emit('test.started', jobId, {
+        testRunId: testRun.id,
+        commandKey: key,
+        command: commandString,
+      });
 
       let command: string;
       let args: string[];
@@ -234,7 +258,12 @@ export class JobPipeline {
         ({ command, args } = tokenizeCommand(commandString));
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
-        this.deps.repos.testRuns.update(testRun.id, { status: 'failed', exitCode: null, stderr: message, finishedAt: new Date().toISOString() });
+        this.deps.repos.testRuns.update(testRun.id, {
+          status: 'failed',
+          exitCode: null,
+          stderr: message,
+          finishedAt: new Date().toISOString(),
+        });
         throw new Error(`Ungültiger ${key}-Befehl: ${message}`, { cause: error });
       }
 
@@ -246,8 +275,17 @@ export class JobPipeline {
         timeoutMs: this.deps.config.limits.testCommandTimeoutMs,
         maxOutputBytes: this.deps.config.limits.maxAgentOutputBytes,
         onOutput: (chunk) => {
-          this.deps.logStore.append(jobId, { ts: new Date().toISOString(), source: 'test', stream: chunk.stream, text: chunk.text });
-          this.deps.publisher.emit('test.output', jobId, { testRunId: testRun.id, stream: chunk.stream, text: chunk.text });
+          this.deps.logStore.append(jobId, {
+            ts: new Date().toISOString(),
+            source: 'test',
+            stream: chunk.stream,
+            text: chunk.text,
+          });
+          this.deps.publisher.emit('test.output', jobId, {
+            testRunId: testRun.id,
+            stream: chunk.stream,
+            text: chunk.text,
+          });
         },
       });
       const onAbort = () => handle.cancel();
@@ -259,7 +297,13 @@ export class JobPipeline {
         signal.removeEventListener('abort', onAbort);
       }
 
-      const status = result.timedOut ? 'timeout' : result.canceled ? 'canceled' : result.exitCode === 0 ? 'completed' : 'failed';
+      const status = result.timedOut
+        ? 'timeout'
+        : result.canceled
+          ? 'canceled'
+          : result.exitCode === 0
+            ? 'completed'
+            : 'failed';
       const finished = this.deps.repos.testRuns.update(testRun.id, {
         status,
         exitCode: result.exitCode,
@@ -295,7 +339,8 @@ export class JobPipeline {
     const changed = await this.deps.git.changedFiles(worktree, project.baseBranch);
     // Diff als Artefakt sichern, damit die UI ihn anzeigen kann.
     this.deps.repos.artifacts.insert({ jobId, type: 'diff', content: diff });
-    const plan = this.deps.repos.artifacts.latestByType(jobId, 'plan')?.content ?? '(kein Plan gefunden)';
+    const plan =
+      this.deps.repos.artifacts.latestByType(jobId, 'plan')?.content ?? '(kein Plan gefunden)';
     const testReport = this.buildTestReport(jobId, iteration);
     const prompt = buildReviewPrompt({
       ticket,
@@ -319,15 +364,36 @@ export class JobPipeline {
     }
     if (verdict === 'FAIL') {
       await this.writeArtifactFile(job, 'REVIEW.md', result.output);
-      const artifact = this.recordArtifact(jobId, result.runId, 'review', path.join(worktree, AGENT_DIR, 'REVIEW.md'), result.output);
-      this.deps.repos.reviewIterations.insert({ jobId, iteration, verdict: 'FAIL', artifactId: artifact.id });
-      this.deps.publisher.record({ type: 'review.failed', jobId, payload: { iteration }, message: `Review-Iteration ${iteration}: FAIL` });
+      const artifact = this.recordArtifact(
+        jobId,
+        result.runId,
+        'review',
+        path.join(worktree, AGENT_DIR, 'REVIEW.md'),
+        result.output,
+      );
+      this.deps.repos.reviewIterations.insert({
+        jobId,
+        iteration,
+        verdict: 'FAIL',
+        artifactId: artifact.id,
+      });
+      this.deps.publisher.record({
+        type: 'review.failed',
+        jobId,
+        payload: { iteration },
+        message: `Review-Iteration ${iteration}: FAIL`,
+      });
       log.info({ iteration }, 'Review FAIL');
       return 'FAIL';
     }
     this.recordArtifact(jobId, result.runId, 'review', null, result.output);
     this.deps.repos.reviewIterations.insert({ jobId, iteration, verdict: 'PASS' });
-    this.deps.publisher.record({ type: 'review.passed', jobId, payload: { iteration }, message: `Review-Iteration ${iteration}: PASS` });
+    this.deps.publisher.record({
+      type: 'review.passed',
+      jobId,
+      payload: { iteration },
+      message: `Review-Iteration ${iteration}: PASS`,
+    });
     log.info({ iteration }, 'Review PASS');
     return 'PASS';
   }
@@ -341,9 +407,18 @@ export class JobPipeline {
   ): Promise<{ runId: string; status: string; output: string; error: string | null }> {
     const { repos, publisher, logStore, config } = this.deps;
     if (signal.aborted) throw new PipelineAbort(abortReasonOf(signal));
-    const run = repos.agentRuns.insert({ jobId: input.jobId, phase: input.phase, agent: input.agent });
+    const run = repos.agentRuns.insert({
+      jobId: input.jobId,
+      phase: input.phase,
+      agent: input.agent,
+    });
     repos.jobs.update(input.jobId, { currentAgent: input.agent });
-    publisher.record({ type: 'agent.started', jobId: input.jobId, payload: { runId: run.id, agent: input.agent, phase: input.phase }, message: `${input.agent} (${input.phase}) gestartet` });
+    publisher.record({
+      type: 'agent.started',
+      jobId: input.jobId,
+      payload: { runId: run.id, agent: input.agent, phase: input.phase },
+      message: `${input.agent} (${input.phase}) gestartet`,
+    });
 
     const onAbort = () => void adapter.cancel(run.id);
     signal.addEventListener('abort', onAbort, { once: true });
@@ -357,8 +432,17 @@ export class JobPipeline {
         timeoutMs: config.limits.maxJobRuntimeMs,
         maxOutputBytes: config.limits.maxAgentOutputBytes,
         onOutput: (chunk) => {
-          logStore.append(input.jobId, { ts: new Date().toISOString(), source: 'agent', stream: chunk.stream, text: chunk.text });
-          publisher.emit('agent.output', input.jobId, { runId: run.id, stream: chunk.stream, text: chunk.text });
+          logStore.append(input.jobId, {
+            ts: new Date().toISOString(),
+            source: 'agent',
+            stream: chunk.stream,
+            text: chunk.text,
+          });
+          publisher.emit('agent.output', input.jobId, {
+            runId: run.id,
+            stream: chunk.stream,
+            text: chunk.text,
+          });
         },
         onSpawned: (pgid) => {
           repos.agentRuns.update(run.id, { pgid: pgid ?? null });
@@ -374,9 +458,19 @@ export class JobPipeline {
       });
       repos.jobs.update(input.jobId, { currentAgent: null, activePgid: null });
       if (result.status === 'completed') {
-        publisher.record({ type: 'agent.completed', jobId: input.jobId, payload: { runId: run.id, status: result.status, exitCode: result.exitCode }, message: `${input.agent} (${input.phase}) abgeschlossen` });
+        publisher.record({
+          type: 'agent.completed',
+          jobId: input.jobId,
+          payload: { runId: run.id, status: result.status, exitCode: result.exitCode },
+          message: `${input.agent} (${input.phase}) abgeschlossen`,
+        });
       } else {
-        publisher.record({ type: 'agent.failed', jobId: input.jobId, payload: { runId: run.id, status: result.status, error: result.error ?? 'unbekannt' }, message: `${input.agent} (${input.phase}): ${result.status}` });
+        publisher.record({
+          type: 'agent.failed',
+          jobId: input.jobId,
+          payload: { runId: run.id, status: result.status, error: result.error ?? 'unbekannt' },
+          message: `${input.agent} (${input.phase}): ${result.status}`,
+        });
       }
       if (signal.aborted) throw new PipelineAbort(abortReasonOf(signal));
       return { runId: run.id, status: result.status, output: result.output, error: result.error };
@@ -400,19 +494,39 @@ export class JobPipeline {
     assertTransition(job.state, 'rework');
     const count = job.reviewLoopCount + 1;
     this.deps.repos.jobs.update(jobId, { state: 'rework', reviewLoopCount: count });
-    this.publishStateChange(jobId, job.state, 'rework', `${message} (Schleife ${count}/${this.deps.config.limits.maxReviewLoops})`);
+    this.publishStateChange(
+      jobId,
+      job.state,
+      'rework',
+      `${message} (Schleife ${count}/${this.deps.config.limits.maxReviewLoops})`,
+    );
   }
 
   private async finishDone(jobId: string, ticket: Ticket): Promise<void> {
     const job = this.mustJob(jobId);
     assertTransition(job.state, 'done');
-    this.deps.repos.jobs.update(jobId, { state: 'done', finishedAt: new Date().toISOString(), currentAgent: null, activePgid: null, lastError: null });
-    this.publishStateChange(jobId, job.state, 'done', 'Review bestanden — fertig (kein automatischer Merge/Push)');
+    this.deps.repos.jobs.update(jobId, {
+      state: 'done',
+      finishedAt: new Date().toISOString(),
+      currentAgent: null,
+      activePgid: null,
+      lastError: null,
+    });
+    this.publishStateChange(
+      jobId,
+      job.state,
+      'done',
+      'Review bestanden — fertig (kein automatischer Merge/Push)',
+    );
     const summary = this.deps.repos.jobs.getSummary(jobId);
-    if (summary) this.deps.publisher.record({ type: 'job.completed', jobId, payload: { job: summary } });
+    if (summary)
+      this.deps.publisher.record({ type: 'job.completed', jobId, payload: { job: summary } });
     if (this.deps.linear.commentsEnabled) {
       try {
-        await this.deps.linear.postComment(ticket.linearIssueId, `Lokaler Agent-Workflow abgeschlossen für ${ticket.identifier} (Review bestanden).`);
+        await this.deps.linear.postComment(
+          ticket.linearIssueId,
+          `Lokaler Agent-Workflow abgeschlossen für ${ticket.identifier} (Review bestanden).`,
+        );
       } catch (error) {
         this.deps.logger.warn({ err: error, jobId }, 'Linear-Kommentar fehlgeschlagen');
       }
@@ -422,7 +536,12 @@ export class JobPipeline {
   private async finishNeedsHuman(jobId: string, reason: string): Promise<void> {
     const job = this.mustJob(jobId);
     assertTransition(job.state, 'needs_human');
-    this.deps.repos.jobs.update(jobId, { state: 'needs_human', lastError: reason, currentAgent: null, activePgid: null });
+    this.deps.repos.jobs.update(jobId, {
+      state: 'needs_human',
+      lastError: reason,
+      currentAgent: null,
+      activePgid: null,
+    });
     this.publishStateChange(jobId, job.state, 'needs_human', reason);
   }
 
@@ -436,10 +555,21 @@ export class JobPipeline {
       this.deps.repos.jobs.update(jobId, { lastError: message });
       return;
     }
-    this.deps.repos.jobs.update(jobId, { state: 'failed', lastError: message, finishedAt: new Date().toISOString(), currentAgent: null, activePgid: null });
+    this.deps.repos.jobs.update(jobId, {
+      state: 'failed',
+      lastError: message,
+      finishedAt: new Date().toISOString(),
+      currentAgent: null,
+      activePgid: null,
+    });
     this.publishStateChange(jobId, job.state, 'failed', message);
     const summary = this.deps.repos.jobs.getSummary(jobId);
-    if (summary) this.deps.publisher.record({ type: 'job.failed', jobId, payload: { job: summary, error: message } });
+    if (summary)
+      this.deps.publisher.record({
+        type: 'job.failed',
+        jobId,
+        payload: { job: summary, error: message },
+      });
   }
 
   /** Vom Queue-Manager aufgerufen, wenn ein Lauf abgebrochen wurde. */
@@ -455,10 +585,16 @@ export class JobPipeline {
     const job = this.mustJob(jobId);
     if (job.pauseRequested) {
       assertTransition(job.state, 'paused');
-      this.deps.repos.jobs.update(jobId, { state: 'paused', pauseRequested: false, currentAgent: null, activePgid: null });
+      this.deps.repos.jobs.update(jobId, {
+        state: 'paused',
+        pauseRequested: false,
+        currentAgent: null,
+        activePgid: null,
+      });
       this.publishStateChange(jobId, job.state, 'paused', 'Pausiert auf Benutzerwunsch');
       const summary = this.deps.repos.jobs.getSummary(jobId);
-      if (summary) this.deps.publisher.record({ type: 'job.paused', jobId, payload: { job: summary } });
+      if (summary)
+        this.deps.publisher.record({ type: 'job.paused', jobId, payload: { job: summary } });
       return true;
     }
     return false;
@@ -499,7 +635,13 @@ export class JobPipeline {
     filePath: string | null,
     content: string,
   ) {
-    const artifact = this.deps.repos.artifacts.insert({ jobId, agentRunId, type, path: filePath, content });
+    const artifact = this.deps.repos.artifacts.insert({
+      jobId,
+      agentRunId,
+      type,
+      path: filePath,
+      content,
+    });
     this.deps.publisher.record({
       type: 'artifact.created',
       jobId,
@@ -523,14 +665,22 @@ export class JobPipeline {
     return runs
       .map((r) => {
         const head = `## ${r.commandKey}: ${r.command} → Exit ${r.exitCode ?? 'n/a'} (${r.status})`;
-        const body = [r.stdout, r.stderr].filter((s) => s.trim().length > 0).join('\n').slice(-4000);
+        const body = [r.stdout, r.stderr]
+          .filter((s) => s.trim().length > 0)
+          .join('\n')
+          .slice(-4000);
         return `${head}\n${body}`;
       })
       .join('\n\n');
   }
 
   private system(jobId: string, message: string): void {
-    this.deps.logStore.append(jobId, { ts: new Date().toISOString(), source: 'system', stream: 'info', text: message });
+    this.deps.logStore.append(jobId, {
+      ts: new Date().toISOString(),
+      source: 'system',
+      stream: 'info',
+      text: message,
+    });
   }
 
   private publishStateChange(jobId: string, from: JobState, to: JobState, message: string): void {

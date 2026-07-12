@@ -50,9 +50,9 @@ describe('importRequestSchema', () => {
       projectId: '4b4b1c56-91f2-4e37-9161-2f5a51a2a8c1',
     });
     expect(ok.success).toBe(true);
-    expect(importRequestSchema.safeParse({ identifier: 'APP-123', projectId: 'nope' }).success).toBe(
-      false,
-    );
+    expect(
+      importRequestSchema.safeParse({ identifier: 'APP-123', projectId: 'nope' }).success,
+    ).toBe(false);
   });
 
   it('lehnt unbekannte Felder ab', () => {

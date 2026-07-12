@@ -220,21 +220,14 @@ export class JobService {
         return this.moveToAgentReady(job, 'Workflow per Board gestartet');
       }
       const patch =
-        to === 'done'
-          ? { state: to, finishedAt: new Date().toISOString() }
-          : { state: to };
+        to === 'done' ? { state: to, finishedAt: new Date().toISOString() } : { state: to };
       this.deps.repos.jobs.update(jobId, patch);
       this.broadcastStateChange(jobId, job.state, to, `Manuell nach ${to} verschoben`);
       return this.getSummary(jobId);
     });
   }
 
-  private broadcastStateChange(
-    jobId: string,
-    from: JobState,
-    to: JobState,
-    message: string,
-  ): void {
+  private broadcastStateChange(jobId: string, from: JobState, to: JobState, message: string): void {
     const summary = this.getSummary(jobId);
     this.deps.publisher.record({
       type: 'job.state_changed',

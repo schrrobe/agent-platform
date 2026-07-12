@@ -59,9 +59,13 @@ export function registerErrorHandler(app: {
       return;
     }
     if (error instanceof ZodError) {
-      reply
-        .code(400)
-        .send({ error: { code: 'VALIDATION_ERROR', message: 'Validierung fehlgeschlagen', details: error.flatten() } });
+      reply.code(400).send({
+        error: {
+          code: 'VALIDATION_ERROR',
+          message: 'Validierung fehlgeschlagen',
+          details: error.flatten(),
+        },
+      });
       return;
     }
     if (error instanceof JobServiceError) {

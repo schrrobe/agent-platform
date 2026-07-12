@@ -64,9 +64,7 @@ export class JobEventsRepository {
     const limit = opts.limit ?? 1000;
     const afterId = opts.afterId ?? 0;
     const rows = this.db
-      .prepare(
-        'SELECT * FROM job_events WHERE job_id = ? AND id > ? ORDER BY id ASC LIMIT ?',
-      )
+      .prepare('SELECT * FROM job_events WHERE job_id = ? AND id > ? ORDER BY id ASC LIMIT ?')
       .all(jobId, afterId, limit) as JobEventRow[];
     return rows.map(mapEvent);
   }

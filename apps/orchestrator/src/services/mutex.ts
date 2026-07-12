@@ -8,7 +8,10 @@ export class KeyedMutex {
 
   run<T>(key: string, task: () => Promise<T> | T): Promise<T> {
     const previous = this.chains.get(key) ?? Promise.resolve();
-    const next = previous.then(() => task(), () => task());
+    const next = previous.then(
+      () => task(),
+      () => task(),
+    );
     // Kette weiterführen, Fehler nicht die Kette abreißen lassen.
     this.chains.set(
       key,

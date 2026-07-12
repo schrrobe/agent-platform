@@ -1,11 +1,6 @@
 import { spawn } from 'node:child_process';
 import stripAnsi from 'strip-ansi';
-import type {
-  ProcessHandle,
-  ProcessResult,
-  ProcessRunner,
-  ProcessSpec,
-} from '@agent/shared';
+import type { ProcessHandle, ProcessResult, ProcessRunner, ProcessSpec } from '@agent/shared';
 
 const DEFAULT_TIMEOUT_MS = 10 * 60_000;
 const DEFAULT_MAX_OUTPUT_BYTES = 10 * 1024 * 1024;

@@ -40,7 +40,12 @@ describe('REST API', () => {
     const bad = await harness.app.inject({
       method: 'POST',
       url: '/api/projects',
-      payload: { name: 'X', repositoryPath: harness.repoDir, worktreeRoot: harness.worktreeRoot, commands: { test: 'pnpm test; rm -rf /' } },
+      payload: {
+        name: 'X',
+        repositoryPath: harness.repoDir,
+        worktreeRoot: harness.worktreeRoot,
+        commands: { test: 'pnpm test; rm -rf /' },
+      },
     });
     expect(bad.statusCode).toBe(400);
     expect(bad.json().error.code).toBe('VALIDATION_ERROR');
@@ -48,7 +53,12 @@ describe('REST API', () => {
     const ok = await harness.app.inject({
       method: 'POST',
       url: '/api/projects',
-      payload: { name: 'X', repositoryPath: harness.repoDir, worktreeRoot: harness.worktreeRoot, commands: { test: 'pnpm test' } },
+      payload: {
+        name: 'X',
+        repositoryPath: harness.repoDir,
+        worktreeRoot: harness.worktreeRoot,
+        commands: { test: 'pnpm test' },
+      },
     });
     expect(ok.statusCode).toBe(201);
     expect(ok.json().project.id).toBeTruthy();
@@ -59,7 +69,11 @@ describe('REST API', () => {
     const res = await harness.app.inject({
       method: 'POST',
       url: '/api/projects',
-      payload: { name: 'X', repositoryPath: '/nicht/vorhanden/xyz', worktreeRoot: harness.worktreeRoot },
+      payload: {
+        name: 'X',
+        repositoryPath: '/nicht/vorhanden/xyz',
+        worktreeRoot: harness.worktreeRoot,
+      },
     });
     expect(res.statusCode).toBe(400);
   });
@@ -118,7 +132,9 @@ describe('REST API', () => {
 
   it('liefert 404 für unbekannte Jobs und 400 für ungültigen Ziel-Zustand', async () => {
     harness = await createHarness();
-    expect((await harness.app.inject({ method: 'GET', url: '/api/jobs/nope' })).statusCode).toBe(404);
+    expect((await harness.app.inject({ method: 'GET', url: '/api/jobs/nope' })).statusCode).toBe(
+      404,
+    );
     const job = harness.seedJob('APP-11');
     const res = await harness.app.inject({
       method: 'PATCH',
@@ -138,7 +154,10 @@ describe('REST API', () => {
     expect(logs.statusCode).toBe(200);
     expect(logs.json().logs.length).toBeGreaterThan(0);
 
-    const artifacts = await harness.app.inject({ method: 'GET', url: `/api/jobs/${job.id}/artifacts` });
+    const artifacts = await harness.app.inject({
+      method: 'GET',
+      url: `/api/jobs/${job.id}/artifacts`,
+    });
     expect(artifacts.json().artifacts.some((a: { type: string }) => a.type === 'plan')).toBe(true);
 
     const detail = await harness.app.inject({ method: 'GET', url: `/api/jobs/${job.id}` });

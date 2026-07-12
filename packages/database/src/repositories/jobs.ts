@@ -156,7 +156,9 @@ export class JobsRepository {
     );
     if (entries.length > 0) {
       const sets = entries.map(([key]) => `${JOB_PATCH_COLUMNS[key]} = ?`).join(', ');
-      const values = entries.map(([, value]) => (typeof value === 'boolean' ? toInt(value) : value));
+      const values = entries.map(([, value]) =>
+        typeof value === 'boolean' ? toInt(value) : value,
+      );
       this.db
         .prepare(`UPDATE jobs SET ${sets}, updated_at = ? WHERE id = ?`)
         .run(...values, nowIso(), id);
@@ -175,8 +177,7 @@ export class JobsRepository {
 
   getSummary(id: string): JobSummary | undefined {
     const row = this.db.prepare(`${SUMMARY_SELECT} WHERE j.id = ?`).get(id) as
-      | SummaryRow
-      | undefined;
+      SummaryRow | undefined;
     return row ? mapSummary(row) : undefined;
   }
 
@@ -200,9 +201,7 @@ export class JobsRepository {
     if (states.length === 0) return undefined;
     const placeholders = states.map(() => '?').join(', ');
     const row = this.db
-      .prepare(
-        `SELECT * FROM jobs WHERE project_id = ? AND state IN (${placeholders}) LIMIT 1`,
-      )
+      .prepare(`SELECT * FROM jobs WHERE project_id = ? AND state IN (${placeholders}) LIMIT 1`)
       .get(projectId, ...states) as JobRow | undefined;
     return row ? mapJob(row) : undefined;
   }
@@ -211,9 +210,7 @@ export class JobsRepository {
     if (states.length === 0) return undefined;
     const placeholders = states.map(() => '?').join(', ');
     const row = this.db
-      .prepare(
-        `SELECT * FROM jobs WHERE worktree_path = ? AND state IN (${placeholders}) LIMIT 1`,
-      )
+      .prepare(`SELECT * FROM jobs WHERE worktree_path = ? AND state IN (${placeholders}) LIMIT 1`)
       .get(worktreePath, ...states) as JobRow | undefined;
     return row ? mapJob(row) : undefined;
   }

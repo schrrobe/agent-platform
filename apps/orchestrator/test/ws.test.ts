@@ -46,9 +46,7 @@ describe('WebSocket-Hub', () => {
     expect(types).toContain('agent.started');
     expect(types).toContain('review.passed');
 
-    const seqs = events
-      .filter((e) => e.seq !== null)
-      .map((e) => e.seq as number);
+    const seqs = events.filter((e) => e.seq !== null).map((e) => e.seq as number);
     const sorted = [...seqs].sort((a, b) => a - b);
     expect(seqs).toEqual(sorted);
 

@@ -58,8 +58,7 @@ export class AgentRunsRepository {
 
   get(id: string): AgentRun | undefined {
     const row = this.db.prepare('SELECT * FROM agent_runs WHERE id = ?').get(id) as
-      | AgentRunRow
-      | undefined;
+      AgentRunRow | undefined;
     return row ? mapAgentRun(row) : undefined;
   }
 

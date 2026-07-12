@@ -1,12 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import type { ProcessResult, ProcessRunner } from '@agent/shared';
-import {
-  branchForIdentifier,
-  isPathInside,
-  isSameOrInside,
-  worktreePathFor,
-} from './paths.js';
+import { branchForIdentifier, isPathInside, isSameOrInside, worktreePathFor } from './paths.js';
 
 /**
  * Sichere Git-Fassade. Bewusst NICHT vorhanden: push, merge, force-push,
@@ -120,7 +115,10 @@ export class GitService {
         if (current) entries.push(current);
         current = { path: line.slice('worktree '.length).trim(), branch: null };
       } else if (line.startsWith('branch ') && current) {
-        current.branch = line.slice('branch '.length).trim().replace(/^refs\/heads\//, '');
+        current.branch = line
+          .slice('branch '.length)
+          .trim()
+          .replace(/^refs\/heads\//, '');
       }
     }
     if (current) entries.push(current);
@@ -195,9 +193,7 @@ export class GitService {
 
     const hasBranch = await this.branchExists(repositoryPath, branch);
     if (!hasBranch && !(await this.branchExists(repositoryPath, input.baseBranch))) {
-      throw new GitError(
-        `Basisbranch ${input.baseBranch} existiert nicht in ${repositoryPath}`,
-      );
+      throw new GitError(`Basisbranch ${input.baseBranch} existiert nicht in ${repositoryPath}`);
     }
 
     fs.mkdirSync(path.dirname(worktreePath), { recursive: true });

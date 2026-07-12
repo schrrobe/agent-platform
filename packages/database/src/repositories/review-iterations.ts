@@ -38,9 +38,9 @@ export class ReviewIterationsRepository {
          VALUES (?, ?, ?, ?, ?, ?)`,
       )
       .run(id, input.jobId, input.iteration, input.verdict, input.artifactId ?? null, nowIso());
-    const row = this.db.prepare('SELECT * FROM review_iterations WHERE id = ?').get(
-      id,
-    ) as ReviewIterationRow;
+    const row = this.db
+      .prepare('SELECT * FROM review_iterations WHERE id = ?')
+      .get(id) as ReviewIterationRow;
     return mapReviewIteration(row);
   }
 

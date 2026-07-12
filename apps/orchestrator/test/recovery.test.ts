@@ -14,8 +14,15 @@ describe('Neustart-Recovery', () => {
     const job = harness.seedJob('APP-401');
 
     // Zustand eines mitten im Lauf abgestürzten Jobs simulieren.
-    harness.ctx.repos.jobs.update(job.id, { state: 'implementing', startedAt: new Date().toISOString() });
-    const run = harness.ctx.repos.agentRuns.insert({ jobId: job.id, phase: 'implement', agent: 'codex' });
+    harness.ctx.repos.jobs.update(job.id, {
+      state: 'implementing',
+      startedAt: new Date().toISOString(),
+    });
+    const run = harness.ctx.repos.agentRuns.insert({
+      jobId: job.id,
+      phase: 'implement',
+      agent: 'codex',
+    });
     // PGID einer garantiert nicht existierenden Prozessgruppe (kill wirft ESRCH → toleriert).
     harness.ctx.repos.agentRuns.update(run.id, { pgid: 2_147_483_600 });
 

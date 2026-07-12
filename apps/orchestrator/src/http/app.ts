@@ -38,14 +38,22 @@ export async function buildApp(ctx: AppContext): Promise<FastifyInstance> {
     await app.register(fastifyStatic, { root: DASHBOARD_DIST, wildcard: false });
     // SPA-Fallback: unbekannte GET-Routen außerhalb von /api liefern index.html.
     app.setNotFoundHandler((request, reply) => {
-      if (request.method === 'GET' && !request.url.startsWith('/api') && !request.url.startsWith('/ws')) {
+      if (
+        request.method === 'GET' &&
+        !request.url.startsWith('/api') &&
+        !request.url.startsWith('/ws')
+      ) {
         return reply.sendFile('index.html');
       }
-      return reply.code(404).send({ error: { code: 'NOT_FOUND', message: `Nicht gefunden: ${request.url}` } });
+      return reply
+        .code(404)
+        .send({ error: { code: 'NOT_FOUND', message: `Nicht gefunden: ${request.url}` } });
     });
   } else {
     app.setNotFoundHandler((request, reply) => {
-      reply.code(404).send({ error: { code: 'NOT_FOUND', message: `Nicht gefunden: ${request.url}` } });
+      reply
+        .code(404)
+        .send({ error: { code: 'NOT_FOUND', message: `Nicht gefunden: ${request.url}` } });
     });
   }
 

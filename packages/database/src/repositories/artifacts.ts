@@ -56,8 +56,7 @@ export class ArtifactsRepository {
 
   get(id: string): Artifact | undefined {
     const row = this.db.prepare('SELECT * FROM artifacts WHERE id = ?').get(id) as
-      | ArtifactRow
-      | undefined;
+      ArtifactRow | undefined;
     return row ? mapArtifact(row) : undefined;
   }
 

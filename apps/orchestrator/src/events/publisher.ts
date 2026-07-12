@@ -1,9 +1,4 @@
-import type {
-  AnyWsEnvelope,
-  JobState,
-  WsEventType,
-  WsPayloads,
-} from '@agent/shared';
+import type { AnyWsEnvelope, JobState, WsEventType, WsPayloads } from '@agent/shared';
 import type { JobEventsRepository } from '@agent/database';
 import type { EventBus } from './bus.js';
 

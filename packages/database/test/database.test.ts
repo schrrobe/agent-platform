@@ -148,15 +148,17 @@ describe('Repositories', () => {
 
     expect(repos.jobs.listByStates(['agent_ready'])).toHaveLength(1);
     expect(repos.jobs.listByStates(['done'])).toHaveLength(0);
-    expect(
-      repos.jobs.findByProjectInStates(project.id, ['agent_ready'])?.id,
-    ).toBe(job.id);
+    expect(repos.jobs.findByProjectInStates(project.id, ['agent_ready'])?.id).toBe(job.id);
   });
 
   it('Job-Events: monoton steigende Sequenz-IDs', () => {
     const project = seedProject(repos);
     const ticket = seedTicket(repos, project.id);
-    const job = repos.jobs.insert({ ticketId: ticket.id, projectId: project.id, baseBranch: 'main' });
+    const job = repos.jobs.insert({
+      ticketId: ticket.id,
+      projectId: project.id,
+      baseBranch: 'main',
+    });
 
     const first = repos.jobEvents.append({ jobId: job.id, type: 'job.created' });
     const second = repos.jobEvents.append({
@@ -181,7 +183,11 @@ describe('Repositories', () => {
   it('AgentRuns, Artifacts, ReviewIterations, TestRuns', () => {
     const project = seedProject(repos);
     const ticket = seedTicket(repos, project.id);
-    const job = repos.jobs.insert({ ticketId: ticket.id, projectId: project.id, baseBranch: 'main' });
+    const job = repos.jobs.insert({
+      ticketId: ticket.id,
+      projectId: project.id,
+      baseBranch: 'main',
+    });
 
     const run = repos.agentRuns.insert({ jobId: job.id, phase: 'plan', agent: 'claude' });
     expect(run.status).toBe('running');
@@ -236,7 +242,11 @@ describe('Repositories', () => {
   it('failAllRunning markiert laufende AgentRuns als canceled', () => {
     const project = seedProject(repos);
     const ticket = seedTicket(repos, project.id);
-    const job = repos.jobs.insert({ ticketId: ticket.id, projectId: project.id, baseBranch: 'main' });
+    const job = repos.jobs.insert({
+      ticketId: ticket.id,
+      projectId: project.id,
+      baseBranch: 'main',
+    });
     repos.agentRuns.insert({ jobId: job.id, phase: 'plan', agent: 'claude' });
     repos.agentRuns.insert({ jobId: job.id, phase: 'implement', agent: 'codex' });
 

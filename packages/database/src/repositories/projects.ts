@@ -100,8 +100,7 @@ export class ProjectsRepository {
 
   get(id: string): Project | undefined {
     const row = this.db.prepare('SELECT * FROM projects WHERE id = ?').get(id) as
-      | ProjectRow
-      | undefined;
+      ProjectRow | undefined;
     return row ? mapProject(row) : undefined;
   }
 

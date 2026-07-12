@@ -33,7 +33,10 @@ export interface MigrateResult {
  * eigenen Transaktion. Bereits angewendete Migrationen (schema_migrations)
  * werden übersprungen — mehrfacher Aufruf ist idempotent.
  */
-export function migrate(db: AppDatabase, migrations: Migration[] = loadMigrations()): MigrateResult {
+export function migrate(
+  db: AppDatabase,
+  migrations: Migration[] = loadMigrations(),
+): MigrateResult {
   db.exec(
     `CREATE TABLE IF NOT EXISTS schema_migrations (
       id INTEGER PRIMARY KEY,

@@ -66,8 +66,7 @@ export class TestRunsRepository {
 
   get(id: string): TestRun | undefined {
     const row = this.db.prepare('SELECT * FROM test_runs WHERE id = ?').get(id) as
-      | TestRunRow
-      | undefined;
+      TestRunRow | undefined;
     return row ? mapTestRun(row) : undefined;
   }
 

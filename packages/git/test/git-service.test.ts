@@ -120,7 +120,12 @@ describe('ensureWorktree', () => {
       baseBranch: 'main',
     });
     const add = runner.argsOfCall((spec) => hasArgs(spec, 'worktree', 'add'));
-    expect(add?.args).toEqual(['worktree', 'add', path.join(worktreeRoot, 'app-123'), 'agent/app-123']);
+    expect(add?.args).toEqual([
+      'worktree',
+      'add',
+      path.join(worktreeRoot, 'app-123'),
+      'agent/app-123',
+    ]);
   });
 
   it('verwendet registrierten, gesunden Worktree unverändert weiter', async () => {
