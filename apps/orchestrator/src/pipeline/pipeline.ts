@@ -293,6 +293,8 @@ export class JobPipeline {
     const worktree = this.worktree(job);
     const diff = await this.deps.git.diffAgainstBase(worktree, project.baseBranch);
     const changed = await this.deps.git.changedFiles(worktree, project.baseBranch);
+    // Diff als Artefakt sichern, damit die UI ihn anzeigen kann.
+    this.deps.repos.artifacts.insert({ jobId, type: 'diff', content: diff });
     const plan = this.deps.repos.artifacts.latestByType(jobId, 'plan')?.content ?? '(kein Plan gefunden)';
     const testReport = this.buildTestReport(jobId, iteration);
     const prompt = buildReviewPrompt({

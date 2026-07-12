@@ -2,6 +2,7 @@ import js from '@eslint/js'
 import globals from 'globals'
 import tseslint from 'typescript-eslint'
 import pluginVue from 'eslint-plugin-vue'
+import prettier from 'eslint-config-prettier'
 
 export default tseslint.config(
   {
@@ -30,6 +31,8 @@ export default tseslint.config(
   {
     rules: {
       'vue/multi-word-component-names': 'off',
+      // Prettier verwaltet HTML-Attribut-Umbrüche; diese Regel kollidiert damit.
+      'vue/max-attributes-per-line': 'off',
       '@typescript-eslint/no-explicit-any': 'off',
       '@typescript-eslint/no-unused-vars': [
         'error',
@@ -37,4 +40,6 @@ export default tseslint.config(
       ],
     },
   },
+  // Deaktiviert alle mit Prettier kollidierenden Formatierungsregeln (zuletzt).
+  prettier,
 )

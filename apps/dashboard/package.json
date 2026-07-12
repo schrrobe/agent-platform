@@ -1,0 +1,34 @@
+{
+  "name": "@agent/dashboard",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "vue-tsc --noEmit && vite build",
+    "preview": "vite preview",
+    "typecheck": "vue-tsc --noEmit",
+    "test": "vitest run",
+    "lint": "eslint .",
+    "format": "prettier --write .",
+    "format:check": "prettier --check ."
+  },
+  "dependencies": {
+    "@agent/shared": "workspace:*",
+    "@atlaskit/pragmatic-drag-and-drop": "catalog:",
+    "dompurify": "catalog:",
+    "marked": "catalog:",
+    "pinia": "catalog:",
+    "vue": "catalog:",
+    "vue-router": "catalog:"
+  },
+  "devDependencies": {
+    "@vitejs/plugin-vue": "catalog:",
+    "@vue/test-utils": "catalog:",
+    "happy-dom": "catalog:",
+    "typescript": "catalog:",
+    "vite": "catalog:",
+    "vitest": "catalog:",
+    "vue-tsc": "catalog:"
+  }
+}
