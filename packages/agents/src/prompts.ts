@@ -39,7 +39,8 @@ export function buildPlanPrompt(input: {
   return [
     'Du bist Software-Architekt und erstellst einen Implementierungsplan für das folgende Ticket.',
     'Du arbeitest in dieser Phase AUSSCHLIESSLICH LESEND: Analysiere das Repository im aktuellen',
-    'Arbeitsverzeichnis (Read/Glob/Grep), verändere aber keinerlei Dateien und führe keine Befehle aus.',
+    'Arbeitsverzeichnis mit den verfügbaren lesenden Datei-/Suchwerkzeugen, verändere aber',
+    'keinerlei Dateien und führe keine Befehle aus.',
     `Der Arbeitsbranch basiert auf \`${input.baseBranch}\`.`,
     '',
     'Gib als Antwort ausschließlich EIN gültiges JSON-Objekt aus, ohne Markdown-Codeblock und ohne',

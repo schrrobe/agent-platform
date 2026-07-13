@@ -11,14 +11,13 @@ import {
   renderImplementationMarkdown,
   renderPlanMarkdown,
   renderReviewMarkdown,
-  type ClaudeCodeAdapter,
-  type CodexCliAdapter,
 } from '@agent/agents';
 import { AGENT_DIR, GitConflictError, type ChangedFile, type GitService } from '@agent/git';
 import type { LinearService } from '@agent/linear';
 import { decideAfterFailedTests, decideAfterReview, assertTransition } from '@agent/workflow';
 import {
   CHECK_COMMAND_KEYS,
+  type AgentAdapter,
   type AgentName,
   type AgentPhase,
   type ArtifactType,
@@ -44,8 +43,9 @@ export interface PipelineDeps {
   logger: Logger;
   repos: Repositories;
   git: GitService;
-  claude: ClaudeCodeAdapter;
-  codex: CodexCliAdapter;
+  planner: AgentAdapter;
+  implementer: AgentAdapter;
+  reviewer: AgentAdapter;
   linear: LinearService;
   publisher: Publisher;
   logStore: LogStore;
@@ -58,6 +58,10 @@ class NeedsHumanOutcome {
     readonly message: string,
     readonly resumePhase?: PipelinePhase | null,
   ) {}
+}
+
+function displayAgentName(name: AgentName): string {
+  return `${name.charAt(0).toUpperCase()}${name.slice(1)}`;
 }
 
 /** Deterministische, checkpoint-fähige Job-Pipeline. */
@@ -270,8 +274,8 @@ export class JobPipeline {
       baselineReport,
     });
     const result = await this.runAgent(
-      { jobId, phase: 'plan', agent: 'claude', prompt, cwd: this.worktree(job) },
-      this.deps.claude,
+      { jobId, phase: 'plan', prompt, cwd: this.worktree(job) },
+      this.deps.planner,
       signal,
     );
     if (result.status !== 'completed' || result.output.trim().length === 0) {
@@ -337,16 +341,18 @@ export class JobPipeline {
       testFeedback,
     });
     const result = await this.runAgent(
-      { jobId, phase: isRework ? 'rework' : 'implement', agent: 'codex', prompt, cwd: worktree },
-      this.deps.codex,
+      { jobId, phase: isRework ? 'rework' : 'implement', prompt, cwd: worktree },
+      this.deps.implementer,
       signal,
     );
     if (result.status !== 'completed') {
-      throw new Error(`Codex-Implementierung fehlgeschlagen: ${result.error ?? 'unbekannt'}`);
+      throw new Error(
+        `${displayAgentName(this.deps.implementer.name)}-Implementierung fehlgeschlagen: ${result.error ?? 'unbekannt'}`,
+      );
     }
     if (result.truncated) {
       throw new NeedsHumanOutcome(
-        'Codex-Ergebnis wurde gekappt; Änderungen bleiben zur Prüfung erhalten',
+        `${displayAgentName(this.deps.implementer.name)}-Ergebnis wurde gekappt; Änderungen bleiben zur Prüfung erhalten`,
       );
     }
     let implementation;
@@ -364,7 +370,9 @@ export class JobPipeline {
     const base = this.baseCommit(job);
     const changed = await this.deps.git.changedFiles(worktree, base);
     if (!commit && changed.length === 0) {
-      throw new NeedsHumanOutcome('Codex hat keine Dateiänderungen vorgenommen');
+      throw new NeedsHumanOutcome(
+        `${displayAgentName(this.deps.implementer.name)} hat keine Dateiänderungen vorgenommen`,
+      );
     }
     const head = await this.deps.git.currentHead(worktree);
     this.deps.repos.jobs.update(jobId, { headCommitSha: head });
@@ -603,8 +611,8 @@ export class JobPipeline {
       iteration,
     });
     const result = await this.runAgent(
-      { jobId, phase: 'review', agent: 'claude', prompt, cwd: worktree },
-      this.deps.claude,
+      { jobId, phase: 'review', prompt, cwd: worktree },
+      this.deps.reviewer,
       signal,
     );
     if (result.status !== 'completed') {
@@ -716,8 +724,8 @@ export class JobPipeline {
   }
 
   private async runAgent(
-    input: { jobId: string; phase: AgentPhase; agent: AgentName; prompt: string; cwd: string },
-    adapter: ClaudeCodeAdapter | CodexCliAdapter,
+    input: { jobId: string; phase: AgentPhase; prompt: string; cwd: string },
+    adapter: AgentAdapter,
     signal: AbortSignal,
   ): Promise<{
     runId: string;
@@ -727,18 +735,19 @@ export class JobPipeline {
     truncated: boolean;
   }> {
     const { repos, publisher, logStore, config } = this.deps;
+    const agent = adapter.name;
     if (signal.aborted) throw new PipelineAbort(abortReasonOf(signal));
     const run = repos.agentRuns.insert({
       jobId: input.jobId,
       phase: input.phase,
-      agent: input.agent,
+      agent,
     });
-    repos.jobs.update(input.jobId, { currentAgent: input.agent });
+    repos.jobs.update(input.jobId, { currentAgent: agent });
     publisher.record({
       type: 'agent.started',
       jobId: input.jobId,
-      payload: { runId: run.id, agent: input.agent, phase: input.phase },
-      message: `${input.agent} (${input.phase}) gestartet`,
+      payload: { runId: run.id, agent, phase: input.phase },
+      message: `${agent} (${input.phase}) gestartet`,
     });
     const onAbort = () => void adapter.cancel(run.id);
     signal.addEventListener('abort', onAbort, { once: true });
@@ -785,7 +794,7 @@ export class JobPipeline {
           result.status === 'completed'
             ? { runId: run.id, status: result.status, exitCode: result.exitCode }
             : { runId: run.id, status: result.status, error: result.error ?? 'unbekannt' },
-        message: `${input.agent} (${input.phase}): ${result.status}`,
+        message: `${agent} (${input.phase}): ${result.status}`,
       });
       if (signal.aborted) throw new PipelineAbort(abortReasonOf(signal));
       return {

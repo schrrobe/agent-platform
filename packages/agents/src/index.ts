@@ -6,3 +6,4 @@ export * from './process/executor.js';
 export * from './adapters/base.js';
 export * from './adapters/claude.js';
 export * from './adapters/codex.js';
+export * from './adapters/hermes.js';

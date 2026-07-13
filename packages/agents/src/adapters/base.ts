@@ -2,6 +2,7 @@ import type {
   AgentAdapter,
   AgentExecutionInput,
   AgentExecutionResult,
+  AgentName,
   ProcessHandle,
   ProcessResult,
   ProcessRunner,
@@ -20,7 +21,7 @@ export interface CliAdapterOptions {
  * hier nicht statt — Adapter liefern nur Ergebnisse.
  */
 export abstract class CliAgentAdapter implements AgentAdapter {
-  abstract readonly name: string;
+  abstract readonly name: AgentName;
   protected readonly running = new Map<string, ProcessHandle>();
 
   constructor(protected readonly options: CliAdapterOptions) {}

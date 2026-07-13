@@ -11,6 +11,11 @@ import type {
 } from '@agent/shared';
 import { ClaudeCodeAdapter } from '../src/adapters/claude.js';
 import { CodexCliAdapter } from '../src/adapters/codex.js';
+import {
+  HERMES_IMPLEMENTATION_TOOLSETS,
+  HERMES_INSPECTION_TOOLSETS,
+  HermesAdapter,
+} from '../src/adapters/hermes.js';
 import { buildChildEnv, buildCodexEnv, buildGitEnv, buildTestEnv } from '../src/env.js';
 
 function makeResult(partial: Partial<ProcessResult> = {}): ProcessResult {
@@ -174,6 +179,65 @@ describe('CodexCliAdapter', () => {
     const adapter = new CodexCliAdapter({ runner, env: {}, lastMessageDir: dir });
     const res = await adapter.execute(baseInput({ phase: 'implement' }));
     expect(res.output).toContain('letzte zeilen');
+  });
+});
+
+describe('HermesAdapter', () => {
+  it('nutzt isolierten One-shot-Modus mit expliziten Toolsets', async () => {
+    const runner = new RecordingRunner(makeResult({ stdout: '{"version":1}\n' }));
+    const adapter = new HermesAdapter({
+      runner,
+      env: { PATH: '/usr/bin', HERMES_IGNORE_RULES: '0' },
+      model: 'anthropic/claude-sonnet-4.6',
+      provider: 'anthropic',
+    });
+    const result = await adapter.execute(baseInput());
+
+    expect(runner.lastSpec?.command).toBe('hermes');
+    expect(runner.lastSpec?.args).toEqual([
+      '--ignore-user-config',
+      '--ignore-rules',
+      '--model',
+      'anthropic/claude-sonnet-4.6',
+      '--provider',
+      'anthropic',
+      '--toolsets',
+      HERMES_INSPECTION_TOOLSETS,
+      '--oneshot',
+      'PROMPT-INHALT',
+    ]);
+    expect(runner.lastSpec?.args).not.toContain('--yolo');
+    expect(runner.lastSpec?.env).toMatchObject({
+      PATH: '/usr/bin',
+      HERMES_IGNORE_USER_CONFIG: '1',
+      HERMES_IGNORE_RULES: '1',
+      HERMES_TUI: '0',
+    });
+    expect(result.output).toBe('{"version":1}');
+  });
+
+  it('setzt für Schreibphasen Terminal- und Dateiwerkzeuge fest', async () => {
+    const runner = new RecordingRunner(makeResult());
+    const adapter = new HermesAdapter({ runner, env: {} });
+    await adapter.execute(baseInput({ phase: 'implement' }));
+
+    const args = runner.lastSpec?.args ?? [];
+    expect(args).toEqual(expect.arrayContaining(['--toolsets', HERMES_IMPLEMENTATION_TOOLSETS]));
+  });
+
+  it('erlaubt phasenspezifische Toolsets, aber nie einen impliziten leeren Wert', async () => {
+    const runner = new RecordingRunner(makeResult());
+    const adapter = new HermesAdapter({
+      runner,
+      env: {},
+      phaseToolsets: { review: 'context_engine' },
+    });
+    await adapter.execute(baseInput({ phase: 'review' }));
+    expect(runner.lastSpec?.args).toEqual(expect.arrayContaining(['--toolsets', 'context_engine']));
+
+    expect(() => new HermesAdapter({ runner, env: {}, phaseToolsets: { plan: '  ' } })).toThrow(
+      /dürfen nicht leer sein/,
+    );
   });
 });
 

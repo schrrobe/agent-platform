@@ -23,7 +23,7 @@ Lokale Agenten-Orchestrierungsplattform. Linear-Tickets werden über ihren Ident
 - [Entwicklung, Build, Tests, Migrationen](#entwicklung-build-tests-migrationen)
 - [Sicherheitsmodell](#sicherheitsmodell)
 - [Backup](#backup) · [Fehlerbehebung](#fehlerbehebung) · [Bekannte Einschränkungen](#bekannte-einschränkungen)
-- [Hermes-Integration (geplant)](#hermes-integration-geplant)
+- [Hermes-Integration (in Vorbereitung)](#hermes-integration-in-vorbereitung)
 
 ---
 
@@ -285,13 +285,21 @@ konfigurierten `worktreeRoot`. Die erzeugten Commits liegen jedoch im Git-Objekt
 - Windows wird nicht offiziell unterstützt (Prozessgruppen-Semantik ist POSIX; macOS/Linux getestet).
 - Der Linear-Sync ist ein Import-Snapshot (Re-Import aktualisiert), kein kontinuierlicher Live-Sync.
 
-## Hermes-Integration (geplant)
+## Hermes-Integration (in Vorbereitung)
 
 Die Agentenschicht ist über ein schmales `AgentAdapter`-Interface abstrahiert
-(`execute()` / `cancel()`), während die Phasen versionierte Verträge (`PlanResult`, `ImplementationResult`, `ReviewResult`) verwenden. Aktuell implementieren `ClaudeCodeAdapter` und `CodexCliAdapter` die Ausführung.
-Hermes ist als übergeordnete Bedien- und Delegationsschicht vorgesehen: Ein künftiger
-`HermesAdapter` (bzw. Hermes-Skill) tritt an dieselbe Stelle und ersetzt die direkten CLI-Aufrufe,
-ohne dass Pipeline, Queue oder State Machine sich ändern.
+(`execute()` / `cancel()`), während die Phasen versionierte Verträge (`PlanResult`, `ImplementationResult`, `ReviewResult`) verwenden. `ClaudeCodeAdapter`, `CodexCliAdapter` und der vorbereitete `HermesAdapter` implementieren dieselbe Ausführungsgrenze.
+Hermes ist als übergeordnete Bedien- und Delegationsschicht vorgesehen: Der `HermesAdapter`
+(beziehungsweise ein Hermes-Skill) tritt an dieselbe Stelle wie die direkten CLI-Adapter, ohne
+dass Queue oder State Machine sich ändern.
+
+Der erste Integrationsschnitt ist vorhanden: Die Pipeline hängt nur noch vom allgemeinen
+`AgentAdapter` ab und `@agent/agents` enthält einen `HermesAdapter` für den nichtinteraktiven
+NousResearch-Hermes-One-shot-Modus. Er deaktiviert Benutzerregeln, Memory und Skills, setzt pro
+Phase explizite Toolsets und verwendet weiterhin die vorhandenen versionierten Zod-Verträge.
+Produktiv ist Hermes noch nicht auswählbar: Hermes bestätigt im One-shot-Modus Toolaufrufe
+automatisch. Vor der Konfigurationsverdrahtung muss deshalb eine phasenspezifische OS-Sandbox
+Schreibzugriffe für Plan/Review sperren und Implementierungen auf den Job-Worktree begrenzen.
 
 **Grenze (unveränderlich):** Hermes darf — wie die anderen Agenten — **nicht** über
 Statuswechsel, Merge oder Review-Limits entscheiden. Diese Entscheidungen bleiben ausschließlich

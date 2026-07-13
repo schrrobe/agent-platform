@@ -1,4 +1,4 @@
-import type { AgentPhase } from './types.js';
+import type { AgentName, AgentPhase } from './types.js';
 import type { ProcessOutputChunk } from './process.js';
 
 export interface AgentExecutionInput {
@@ -32,11 +32,11 @@ export interface AgentExecutionResult {
 /**
  * Abstraktion über konkrete Agenten-CLIs. Adapter führen aus und liefern
  * Ergebnisse — Workflow-Entscheidungen (Zustände, Limits, Merges) trifft
- * ausschließlich die Workflow-Engine. Vorbereitet für eine spätere
- * Hermes-Delegationsschicht als dritten Adapter.
+ * ausschließlich die Workflow-Engine. Neben direkten CLI-Adaptern kann eine
+ * Delegationsschicht wie Hermes denselben Vertrag implementieren.
  */
 export interface AgentAdapter {
-  name: string;
+  name: AgentName;
   execute(input: AgentExecutionInput): Promise<AgentExecutionResult>;
   cancel(runId: string): Promise<void>;
 }

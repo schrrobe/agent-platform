@@ -64,7 +64,7 @@ export interface Ticket {
   updatedAt: IsoDateTime;
 }
 
-export type AgentName = 'claude' | 'codex';
+export type AgentName = 'claude' | 'codex' | 'hermes';
 export type AgentPhase = 'plan' | 'implement' | 'review' | 'rework';
 export type RunStatus = 'running' | 'completed' | 'failed' | 'canceled' | 'timeout';
 
