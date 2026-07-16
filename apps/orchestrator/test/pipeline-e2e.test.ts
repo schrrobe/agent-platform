@@ -1,6 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
+import { worktreePathForJob } from '@agent/git';
 import { createHarness, nodeCommand, type Harness } from './helpers/harness.js';
 
 let harness: Harness | undefined;
@@ -35,7 +36,7 @@ describe('Pipeline E2E (Fake-Claude/-Codex)', () => {
 
     const finished = harness.ctx.repos.jobs.get(job.id)!;
     const suffix = job.id.replaceAll('-', '');
-    expect(finished.branch).toBe(`agent/app-1/${suffix}`);
+    expect(finished.branch).toBe(`feature/app-1/${suffix}`);
     expect(finished.worktreePath).toBe(path.join(harness.worktreeRoot, `app-1-${suffix}`));
     expect(finished.baseCommitSha).toMatch(/^[0-9a-f]{40}$/);
     expect(finished.headCommitSha).toMatch(/^[0-9a-f]{40}$/);
@@ -271,5 +272,40 @@ describe('Pipeline E2E (Fake-Claude/-Codex)', () => {
     expect(resumed, harness.ctx.repos.jobs.get(job.id)?.lastError ?? '').toBe('ready_for_human');
     expect(JSON.parse(fs.readFileSync(harness.stateFile, 'utf8')).codex).toBe(1);
     expect(harness.ctx.repos.testRuns.listByJob(job.id)).toHaveLength(1);
+  });
+
+  it('persistiert den Branch vor der Worktree-Erstellung und behält ihn bei Ticket-Änderungen', async () => {
+    harness = await createHarness({ reviewSequence: 'PASS' });
+    const job = harness.seedJob('APP-910');
+    const obstruction = worktreePathForJob(harness.worktreeRoot, 'APP-910', job.id);
+    fs.mkdirSync(obstruction, { recursive: true });
+
+    await harness.ctx.jobs.start(job.id);
+    expect(await harness.waitForState(job.id, ['needs_human'])).toBe('needs_human');
+    const persistedBranch = harness.ctx.repos.jobs.get(job.id)?.branch;
+    expect(persistedBranch).toMatch(/^feature\/app-910\//);
+
+    const ticket = harness.ctx.repos.tickets.get(job.ticketId)!;
+    harness.ctx.repos.tickets.upsert({
+      projectId: ticket.projectId,
+      linearIssueId: ticket.linearIssueId,
+      identifier: ticket.identifier,
+      title: 'Bug nach Re-Import',
+      description: ticket.description,
+      url: ticket.url,
+      teamKey: ticket.teamKey,
+      teamName: ticket.teamName,
+      priority: ticket.priority,
+      priorityLabel: ticket.priorityLabel,
+      labels: ['bug'],
+      linearState: ticket.linearState,
+      linearCreatedAt: ticket.linearCreatedAt,
+      linearUpdatedAt: ticket.linearUpdatedAt,
+    });
+    fs.rmSync(obstruction, { recursive: true });
+
+    await harness.ctx.jobs.retry(job.id);
+    expect(await harness.waitForState(job.id, ['ready_for_human'])).toBe('ready_for_human');
+    expect(harness.ctx.repos.jobs.get(job.id)?.branch).toBe(persistedBranch);
   });
 });

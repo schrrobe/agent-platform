@@ -31,8 +31,10 @@ const envSchema = z.object({
   CLAUDE_BIN: z.string().default('claude'),
   CODEX_BIN: z.string().default('codex'),
   SRT_BIN: z.string().default('srt'),
-  CLAUDE_MODEL: z.string().optional().default(''),
-  CODEX_MODEL: z.string().optional().default(''),
+  CLAUDE_MODEL: z.string().optional().default('opus'),
+  CODEX_MODEL: z.string().optional().default('gpt-5.6-sol'),
+  CLAUDE_EFFORT: z.enum(['low', 'medium', 'high']).default('high'),
+  CODEX_EFFORT: z.enum(['low', 'medium', 'high']).default('medium'),
   CLAUDE_MAX_BUDGET_USD: z.coerce.number().positive().optional(),
 
   MAX_REVIEW_LOOPS: z.coerce.number().int().min(0).max(50).default(3),
@@ -68,6 +70,8 @@ export interface AppConfig {
     srtBin: string;
     claudeModel: string | undefined;
     codexModel: string | undefined;
+    claudeEffort: 'low' | 'medium' | 'high';
+    codexEffort: 'low' | 'medium' | 'high';
     claudeMaxBudgetUsd: number | undefined;
   };
   limits: {
@@ -135,8 +139,10 @@ export function loadConfig(source: NodeJS.ProcessEnv = process.env): AppConfig {
       claudeBin: env.CLAUDE_BIN,
       codexBin: env.CODEX_BIN,
       srtBin: env.SRT_BIN,
-      claudeModel: env.CLAUDE_MODEL || undefined,
-      codexModel: env.CODEX_MODEL || undefined,
+      claudeModel: env.CLAUDE_MODEL === '' ? undefined : env.CLAUDE_MODEL,
+      codexModel: env.CODEX_MODEL === '' ? undefined : env.CODEX_MODEL,
+      claudeEffort: env.CLAUDE_EFFORT,
+      codexEffort: env.CODEX_EFFORT,
       claudeMaxBudgetUsd: env.CLAUDE_MAX_BUDGET_USD,
     },
     limits: {

@@ -4,6 +4,8 @@ export const API_ERROR_CODES = [
   'INVALID_TRANSITION',
   'CONFLICT',
   'LINEAR_ERROR',
+  'GITHUB_ERROR',
+  'AGENT_ERROR',
   'INTERNAL',
 ] as const;
 

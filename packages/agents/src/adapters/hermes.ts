@@ -9,6 +9,7 @@ const DEFAULT_TOOLSETS: Readonly<Record<AgentPhase, string>> = {
   implement: HERMES_IMPLEMENTATION_TOOLSETS,
   review: HERMES_INSPECTION_TOOLSETS,
   rework: HERMES_IMPLEMENTATION_TOOLSETS,
+  github_review: HERMES_IMPLEMENTATION_TOOLSETS,
 };
 
 export interface HermesAdapterOptions {

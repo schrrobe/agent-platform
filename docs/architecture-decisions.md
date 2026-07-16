@@ -36,11 +36,11 @@ Test-Fehlschlag-Schleifen (`testing→rework`) wären sonst unbegrenzt. **Entsch
 
 ## ADR-009: Restart-Recovery über persistierte Prozessgruppen-IDs
 
-Nach einem Crash können Agenten- oder Test-Kindprozesse weiterlaufen und Worktrees mutieren. **Entscheidung:** PGIDs werden für Agentenläufe und den jeweils aktiven Projektbefehl persistiert; beim Boot werden eindeutige Überlebende per `kill(-pgid)` beendet (ESRCH-tolerant), laufende Agenten-/Testläufe abgebrochen und Jobs in aktiven Zuständen auf `failed` („Durch Neustart unterbrochen") gesetzt. Retry ist ausschließlich explizit.
+Nach einem Crash können Agenten- oder Test-Kindprozesse weiterlaufen und Worktrees mutieren. **Entscheidung:** PGIDs werden für Agentenläufe und den jeweils aktiven Projektbefehl persistiert; beim Boot werden eindeutige Überlebende per `kill(-pgid)` beendet (ESRCH-tolerant), laufende Agenten-/Testläufe abgebrochen und Jobs in aktiven Zuständen auf `failed` („Durch Neustart unterbrochen") gesetzt. Eine unterbrochene GitHub-Nacharbeit behält dagegen ihren terminalen Jobzustand: Nach Eigentümerprüfung werden nur uncommittierte Reste auf den zuletzt persistierten, geprüften HEAD verworfen und der Aktionsstatus freigegeben. Bei fehlenden oder widersprüchlichen Metadaten wird nichts verworfen und ein manueller Hinweis gespeichert. Retry ist ausschließlich explizit.
 
 ## ADR-010: Commits pro Iteration durch den Orchestrator
 
-Stabile, auditierbare Diffs für Review und Rework. **Entscheidung:** Nach jeder Codex-Iteration committet der Orchestrator (`git add -A -- . ':(exclude).agent'`) mit Identität aus `GIT_AUTHOR_*`/`GIT_COMMITTER_*`-Umgebungsvariablen — die globale Git-Konfiguration des Nutzers wird nie berührt. Review-Diff = `git diff <base>...HEAD` ohne `.agent/`. Push, Merge, Force-Push und Branch-Löschung existieren im GitService nicht.
+Stabile, auditierbare Diffs für Review und Rework. **Entscheidung:** Nach jeder Codex-Iteration committet der Orchestrator (`git add -A -- . ':(exclude).agent'`) mit Identität aus `GIT_AUTHOR_*`/`GIT_COMMITTER_*`-Umgebungsvariablen — die globale Git-Konfiguration des Nutzers wird nie berührt. Review-Diff = `git diff <base>...HEAD` ohne `.agent/`. Push, Merge, Force-Push und Branch-Löschung existieren im GitService nicht. Eine davon getrennte, ausdrücklich vom Nutzer gestartete GitHub-Review-Aktion darf den aktuellen Job-Branch ohne Force auf seinen bereits konfigurierten Upstream pushen; erst nach erfolgreichem Push löst sie von Codex als vollständig erledigt gemeldete Review-Threads über die GitHub-API auf.
 
 ## ADR-011: ProcessRunner-Typ in `@agent/shared`, Implementierung in `@agent/agents`
 
@@ -80,7 +80,7 @@ Ein konfigurierter Befehl wie `pnpm test` kann vom Agenten veränderte Package-S
 
 ## ADR-020: Worktrees gehören einem Job und werden niemals automatisch bereinigt
 
-Ticketweite Branches kollidieren bei Wiederholungen; `reset --hard`/`clean -fd` kann manuelle Arbeit vernichten. **Entscheidung:** Branch und Pfad enthalten eine Job-ID, `OWNER.json` bindet Job, Repository, Branch und Basis-SHA. Unbekannte, falsch zugeordnete, beschädigte oder schmutzige Worktrees eskalieren. Der Orchestrator löscht keine Verzeichnisse und verwirft keine Änderungen. Commits deaktivieren Hooks und Signierung; Diff-Aufrufe deaktivieren externe Treiber. Aktive `.gitattributes`-Filter werden vor Checkout und Staging fail-closed abgelehnt. Review-Diffs referenzieren den gespeicherten Basis-Commit statt einen beweglichen Branchnamen.
+Ticketweite Branches kollidieren bei Wiederholungen; `reset --hard`/`clean -fd` kann manuelle Arbeit vernichten. **Entscheidung:** Branch und Pfad enthalten eine Job-ID, der freie Branchname wird vor Worktree-Erstellung persistiert, und `OWNER.json` bindet Job, Repository, Branch und Basis-SHA. Unbekannte, falsch zugeordnete, beschädigte oder bereits schmutzige Worktrees eskalieren. Der normale Workflow löscht keine Verzeichnisse und verwirft keine Änderungen. Eine explizite Post-Run-Aktion darf nur nach dokumentiert sauberem Ausgangszustand ihre eigenen, noch nicht committeten Änderungen auf genau den zuvor gespeicherten HEAD zurücksetzen. Commits deaktivieren Hooks und Signierung; Diff-Aufrufe deaktivieren externe Treiber. Aktive `.gitattributes`-Filter werden vor Checkout und Staging fail-closed abgelehnt. Review-Diffs referenzieren den gespeicherten Basis-Commit statt einen beweglichen Branchnamen.
 
 ## ADR-021: Planfreigabe und Handoff sind eigene Zustände
 
@@ -89,3 +89,7 @@ Ein Ticket ist häufig keine vollständige Spezifikation, und „Review bestande
 ## ADR-022: Deterministischer Completion-Contract
 
 LLM-PASS allein genügt nicht. **Entscheidung:** Vor der Übergabe müssen Baseline (falls aktiviert), alle aggregiert ausgeführten Pflichtchecks, sauberer Worktree, unverändertes Test-HEAD, ungekappte Ausgaben, Diffgrößen-/Dateilimits, Binärdatei-Gate, gesperrte Pfade, Owner-Metadaten und unveränderte Basis bestehen. Verletzungen führen zu `needs_human`; die Agenten können die Gates nicht verändern.
+
+## ADR-023: GitHub-Nacharbeit ist eine transaktionale Queue-Aktion
+
+PR-Review-Nacharbeit schreibt in denselben Worktree und Git-Objektspeicher wie die normale Pipeline. **Entscheidung:** Die Aktion reserviert einen normalen Queue-/Projektschreibslot und führt ein AbortSignal über Codex, Prüfungen, Git und GitHub. Der Job bleibt während Warten und Ausführung sichtbar aktiv. Ausgangspunkt ist zwingend ein sauberer, eigentümergeprüfter Worktree; dessen HEAD wird vor externen Aufrufen als Recovery-Anker persistiert. Codex-Änderungen werden vollständig gestaged, gegen Policies geprüft und noch vor dem Commit getestet. Fehler bis zu diesem Commit verwerfen ausschließlich den Aktions-Diff gegen den gespeicherten Ausgangs-HEAD. Ein erfolgreicher Commit ersetzt sofort den Recovery-Anker; verifizierter Code bleibt bei Crash-, Push- oder API-Fehlern für einen sicheren Retry erhalten. Jeder Retry synchronisiert und verifiziert den Upstream unabhängig davon, ob er selbst einen neuen Commit erstellt hat. Erst dann dürfen vollständig adressierte und vollständig paginierte Review-Threads aufgelöst werden.

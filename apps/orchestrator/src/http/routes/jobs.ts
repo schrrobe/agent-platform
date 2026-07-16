@@ -49,6 +49,12 @@ export function registerJobRoutes(app: FastifyInstance, ctx: AppContext): void {
     return { job: await ctx.jobs.cancel(id) };
   });
 
+  app.post('/api/jobs/:id/github-review', async (request) => {
+    const { id } = request.params as { id: string };
+    const result = await ctx.githubReviews.run(id);
+    return { job: ctx.jobs.getSummary(id), result };
+  });
+
   app.patch('/api/jobs/:id/state', async (request) => {
     const { id } = request.params as { id: string };
     const input = parseBody(statePatchSchema, request.body);

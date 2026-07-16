@@ -31,6 +31,7 @@ const TABS = [
   'REVIEW.md',
   'Diff',
   'Handoff',
+  'GitHub-Review',
   'Tests',
   'Fehler',
   'Metadaten',
@@ -43,6 +44,8 @@ const detail = computed(() => store.detail);
 const busy = ref(false);
 const confirmCancel = ref(false);
 const approvalNote = ref('');
+const actionMessage = ref<string | null>(null);
+const actionError = ref<string | null>(null);
 
 function artifact(type: ArtifactType): string | null {
   const list = detail.value?.artifacts.filter((a) => a.type === type) ?? [];
@@ -61,11 +64,24 @@ const canPause = computed(() =>
 );
 const canCancel = computed(() =>
   detail.value
-    ? !['done', 'failed', 'ready_for_human', 'awaiting_plan_approval'].includes(detail.value.state)
+    ? detail.value.currentAgent != null ||
+      !['done', 'failed', 'ready_for_human', 'awaiting_plan_approval'].includes(detail.value.state)
     : false,
 );
 const canComplete = computed(() => detail.value?.state === 'ready_for_human');
 const canAcceptHuman = computed(() => detail.value?.state === 'needs_human');
+const canGithubReview = computed(() =>
+  detail.value
+    ? ['ready_for_human', 'done'].includes(detail.value.state) &&
+      detail.value.branch != null &&
+      detail.value.currentAgent == null
+    : false,
+);
+const cancelIsPostRun = computed(() =>
+  detail.value
+    ? detail.value.currentAgent != null && ['ready_for_human', 'done'].includes(detail.value.state)
+    : false,
+);
 const isActive = computed(() =>
   detail.value ? ACTIVE_STATES.includes(detail.value.state) : false,
 );
@@ -90,6 +106,28 @@ const approve = () =>
   });
 const complete = () => act(() => api.patchState(detail.value!.id, 'done'));
 const acceptHuman = () => act(() => api.patchState(detail.value!.id, 'ready_for_human'));
+async function runGithubReview(): Promise<void> {
+  busy.value = true;
+  actionMessage.value = null;
+  actionError.value = null;
+  try {
+    const { job, result } = await api.runGithubReview(detail.value!.id);
+    jobs.upsert(job as never);
+    actionMessage.value =
+      result.openThreadCount === 0
+        ? 'Keine offenen GitHub-Review-Kommentare gefunden.'
+        : `${result.addressedThreadCount}/${result.openThreadCount} GitHub-Threads aufgelöst` +
+          (result.pushed
+            ? ` · Upstream${result.commit ? ` mit ${result.commit.slice(0, 8)}` : ''} aktualisiert`
+            : ' · Upstream bereits synchron');
+    await store.refresh();
+  } catch (error) {
+    actionError.value = (error as Error).message;
+    await store.refresh();
+  } finally {
+    busy.value = false;
+  }
+}
 function doCancel(): void {
   confirmCancel.value = false;
   void act(() => api.cancelJob(detail.value!.id));
@@ -124,12 +162,20 @@ function doCancel(): void {
         <button v-if="canAcceptHuman" :disabled="busy" @click="acceptHuman">
           ✓ Manuell zur Übergabe freigeben
         </button>
+        <button v-if="canGithubReview" :disabled="busy" @click="runGithubReview">
+          {{ busy ? 'Codex prüft GitHub …' : '↻ GitHub-Kommentare mit Codex' }}
+        </button>
         <button v-if="canCancel" class="danger" :disabled="busy" @click="confirmCancel = true">
           {{ isActive ? '⏹ Abbrechen' : '✕ Verwerfen' }}
         </button>
         <a class="linear-link" :href="detail.ticket.url" target="_blank" rel="noreferrer"
           >Linear ↗</a
         >
+      </div>
+
+      <div v-if="actionMessage || actionError" class="action-result">
+        <span v-if="actionMessage">{{ actionMessage }}</span>
+        <span v-else class="err">{{ actionError }}</span>
       </div>
 
       <div v-if="canApprove" class="approval">
@@ -187,6 +233,12 @@ function doCancel(): void {
           markdown
           empty="Noch kein Handoff-Bericht."
         />
+        <ArtifactViewer
+          v-else-if="tab === 'GitHub-Review'"
+          :content="artifact('github_review')"
+          markdown
+          empty="Noch keine GitHub-Review-Nacharbeit."
+        />
         <TestRunPanel v-else-if="tab === 'Tests'" :test-runs="detail.testRuns" />
         <div v-else-if="tab === 'Fehler'" class="pad">
           <pre v-if="detail.lastError" class="err">{{ detail.lastError }}</pre>
@@ -227,9 +279,13 @@ function doCancel(): void {
 
     <ConfirmDialog
       :open="confirmCancel"
-      title="Job abbrechen?"
-      message="Laufende Prozesse werden hart beendet und der Job auf 'failed' gesetzt. Kein Merge/Push findet statt."
-      confirm-label="Abbrechen erzwingen"
+      :title="cancelIsPostRun ? 'GitHub-Nacharbeit abbrechen?' : 'Job abbrechen?'"
+      :message="
+        cancelIsPostRun
+          ? 'Codex und laufende Prüfungen werden beendet. Noch nicht committete Änderungen dieser Aktion werden aufgeräumt; der bestehende Jobstatus bleibt erhalten.'
+          : `Laufende Prozesse werden hart beendet und der Job auf 'failed' gesetzt. Kein Merge/Push findet statt.`
+      "
+      :confirm-label="cancelIsPostRun ? 'Nacharbeit abbrechen' : 'Abbrechen erzwingen'"
       danger
       @confirm="doCancel"
       @cancel="confirmCancel = false"
@@ -293,6 +349,11 @@ function doCancel(): void {
   gap: 6px;
   padding: 10px 18px 12px;
   border-bottom: 1px solid var(--border);
+}
+.action-result {
+  padding: 9px 18px;
+  border-bottom: 1px solid var(--border);
+  font-size: 12px;
 }
 .approval label {
   color: var(--text-dim);

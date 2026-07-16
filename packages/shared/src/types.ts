@@ -65,7 +65,7 @@ export interface Ticket {
 }
 
 export type AgentName = 'claude' | 'codex' | 'hermes';
-export type AgentPhase = 'plan' | 'implement' | 'review' | 'rework';
+export type AgentPhase = 'plan' | 'implement' | 'review' | 'rework' | 'github_review';
 export type RunStatus = 'running' | 'completed' | 'failed' | 'canceled' | 'timeout';
 
 export interface Job {
@@ -134,7 +134,8 @@ export type ArtifactType =
   | 'summary'
   | 'diff'
   | 'test_report'
-  | 'handoff';
+  | 'handoff'
+  | 'github_review';
 
 export interface Artifact {
   id: string;
@@ -190,4 +191,14 @@ export interface LogLine {
   source: 'agent' | 'test' | 'system';
   stream: 'stdout' | 'stderr' | 'info';
   text: string;
+}
+
+export interface GithubReviewActionResult {
+  pullRequestUrl: string;
+  openThreadCount: number;
+  addressedThreadCount: number;
+  remainingThreadCount: number;
+  commit: string | null;
+  pushed: boolean;
+  summary: string;
 }

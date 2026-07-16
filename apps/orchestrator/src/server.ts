@@ -28,7 +28,7 @@ export async function bootstrap(overrides?: {
   }
 
   const ctx = createContext(config, logger, db, overrides?.context);
-  runRecovery(ctx);
+  await runRecovery(ctx);
 
   const app = await buildApp(ctx);
   return { app, ctx };

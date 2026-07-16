@@ -218,7 +218,10 @@ export class JobService {
       if (!PAUSABLE_STATES.includes(job.state)) {
         throw new JobServiceError('CONFLICT', `Pause aus Zustand ${job.state} nicht möglich`);
       }
-      if (this.deps.queue.isRunning(jobId)) {
+      if (
+        this.deps.queue.isRunning(jobId) ||
+        (job.currentAgent != null && this.deps.queue.isQueued(jobId))
+      ) {
         // Soft-Pause: greift an der nächsten Phasengrenze.
         this.deps.repos.jobs.update(jobId, { pauseRequested: true });
         this.deps.logStore.append(jobId, {
@@ -248,17 +251,20 @@ export class JobService {
   async cancel(jobId: string): Promise<JobSummary> {
     return this.withJob(jobId, (job) => {
       if (
+        this.deps.queue.isRunning(jobId) ||
+        (job.currentAgent != null && this.deps.queue.isQueued(jobId))
+      ) {
+        // Pipeline oder explizite Post-Run-Aktion über ihr Queue-AbortSignal stoppen.
+        this.deps.queue.cancel(jobId);
+        return this.getSummary(jobId);
+      }
+      if (
         job.state === 'done' ||
         job.state === 'failed' ||
         job.state === 'ready_for_human' ||
         job.state === 'awaiting_plan_approval'
       ) {
         throw new JobServiceError('CONFLICT', `Job ist bereits ${job.state}`);
-      }
-      if (this.deps.queue.isRunning(jobId)) {
-        // Harter Abbruch: Prozessgruppe wird gekillt, Pipeline setzt failed.
-        this.deps.queue.cancel(jobId);
-        return this.getSummary(jobId);
       }
       this.deps.queue.cancel(jobId);
       assertTransition(job.state, 'failed');
@@ -283,7 +289,7 @@ export class JobService {
   /** Manuelle Zustandsänderung (Kanban-DnD / PATCH). */
   async patchState(jobId: string, to: JobState): Promise<JobSummary> {
     return this.withJob(jobId, (job) => {
-      if (this.deps.queue.isRunning(jobId)) {
+      if (this.deps.queue.isQueued(jobId) || job.currentAgent) {
         throw new JobServiceError(
           'CONFLICT',
           'Laufender Job kann nicht manuell verschoben werden — nutze Pause oder Abbruch',

@@ -8,6 +8,7 @@ export interface CodexAdapterOptions {
   env: Record<string, string>;
   bin?: string;
   model?: string;
+  reasoningEffort?: 'low' | 'medium' | 'high';
   /** Verzeichnis für `--output-last-message`-Dateien (außerhalb der Worktrees). */
   lastMessageDir: string;
 }
@@ -24,11 +25,13 @@ export interface CodexAdapterOptions {
 export class CodexCliAdapter extends CliAgentAdapter {
   readonly name = 'codex';
   private readonly model: string | undefined;
+  private readonly reasoningEffort: 'low' | 'medium' | 'high' | undefined;
   private readonly lastMessageDir: string;
 
   constructor(options: CodexAdapterOptions) {
     super({ runner: options.runner, env: options.env, bin: options.bin ?? 'codex' });
     this.model = options.model;
+    this.reasoningEffort = options.reasoningEffort;
     this.lastMessageDir = options.lastMessageDir;
   }
 
@@ -55,6 +58,7 @@ export class CodexCliAdapter extends CliAgentAdapter {
       this.lastMessageFile(input.runId),
     ];
     if (this.model) args.push('-m', this.model);
+    if (this.reasoningEffort) args.push('-c', `model_reasoning_effort=${this.reasoningEffort}`);
     args.push(input.prompt);
     return args;
   }

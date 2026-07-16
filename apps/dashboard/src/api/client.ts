@@ -2,6 +2,7 @@ import type {
   Artifact,
   ImportRequestInput,
   JobDetail,
+  GithubReviewActionResult,
   JobState,
   JobSummary,
   LogLine,
@@ -87,6 +88,11 @@ export const api = {
     }).then((r) => r.job),
   cancelJob: (id: string) =>
     request<{ job: JobSummary }>(`/api/jobs/${id}/cancel`, { method: 'POST' }).then((r) => r.job),
+  runGithubReview: (id: string) =>
+    request<{ job: JobSummary; result: GithubReviewActionResult }>(
+      `/api/jobs/${id}/github-review`,
+      { method: 'POST' },
+    ),
   patchState: (id: string, state: JobState) =>
     request<{ job: JobSummary }>(`/api/jobs/${id}/state`, {
       method: 'PATCH',

@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   PathValidationError,
+  branchKindForTicket,
   branchForJob,
   branchForIdentifier,
   identifierToSlug,
@@ -26,10 +27,17 @@ describe('isPathInside', () => {
 describe('identifierToSlug / branchForIdentifier', () => {
   it('normalisiert gültige Identifier', () => {
     expect(identifierToSlug('APP-123')).toBe('app-123');
-    expect(branchForIdentifier('APP-123')).toBe('agent/app-123');
+    expect(branchForIdentifier('APP-123')).toBe('feature/app-123');
     expect(branchForJob('APP-123', '11111111-1111-4111-8111-111111111111')).toBe(
-      'agent/app-123/11111111111141118111111111111111',
+      'feature/app-123/11111111111141118111111111111111',
     );
+  });
+
+  it('verwendet konventionelle Kategorien aus Ticket-Metadaten', () => {
+    expect(branchKindForTicket('Login funktioniert nicht', ['bug', 'ui'])).toBe('fix');
+    expect(branchKindForTicket('Dependencies aktualisieren', ['maintenance'])).toBe('chore');
+    expect(branchKindForTicket('Export hinzufügen', ['enhancement'])).toBe('feature');
+    expect(branchForIdentifier('APP-123', 'fix')).toBe('fix/app-123');
   });
 
   it('wirft bei Pfad-Traversal-Versuchen und ungültigen Formaten', () => {

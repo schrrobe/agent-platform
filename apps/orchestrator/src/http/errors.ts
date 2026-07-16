@@ -4,6 +4,8 @@ import type { ApiErrorCode } from '@agent/shared';
 import { InvalidTransitionError } from '@agent/workflow';
 import { JobServiceError } from '../services/job-service.js';
 import { LinearError } from '@agent/linear';
+import { GitConflictError } from '@agent/git';
+import { GithubReviewServiceError } from '../services/github-review.js';
 
 export class ApiError extends Error {
   constructor(
@@ -34,6 +36,13 @@ const JOB_SERVICE_STATUS: Record<JobServiceError['code'], number> = {
   CONFLICT: 409,
   INVALID_TRANSITION: 409,
   LINEAR_ERROR: 502,
+};
+
+const GITHUB_REVIEW_STATUS: Record<GithubReviewServiceError['code'], number> = {
+  NOT_FOUND: 404,
+  CONFLICT: 409,
+  EXTERNAL: 502,
+  AGENT_ERROR: 422,
 };
 
 /** Parst und validiert eine Payload mit Zod; wirft strukturierte ApiError. */
@@ -72,6 +81,24 @@ export function registerErrorHandler(app: {
       reply
         .code(JOB_SERVICE_STATUS[error.code])
         .send({ error: { code: error.code, message: error.message } });
+      return;
+    }
+    if (error instanceof GithubReviewServiceError) {
+      reply.code(GITHUB_REVIEW_STATUS[error.code]).send({
+        error: {
+          code:
+            error.code === 'EXTERNAL'
+              ? 'GITHUB_ERROR'
+              : error.code === 'AGENT_ERROR'
+                ? 'AGENT_ERROR'
+                : error.code,
+          message: error.message,
+        },
+      });
+      return;
+    }
+    if (error instanceof GitConflictError) {
+      reply.code(409).send({ error: { code: 'CONFLICT', message: error.message } });
       return;
     }
     if (error instanceof InvalidTransitionError) {

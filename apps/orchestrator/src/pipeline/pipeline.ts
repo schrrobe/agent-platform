@@ -12,7 +12,13 @@ import {
   renderPlanMarkdown,
   renderReviewMarkdown,
 } from '@agent/agents';
-import { AGENT_DIR, GitConflictError, type ChangedFile, type GitService } from '@agent/git';
+import {
+  AGENT_DIR,
+  GitConflictError,
+  branchKindForTicket,
+  type ChangedFile,
+  type GitService,
+} from '@agent/git';
 import type { LinearService } from '@agent/linear';
 import { decideAfterFailedTests, decideAfterReview, assertTransition } from '@agent/workflow';
 import {
@@ -67,6 +73,32 @@ function displayAgentName(name: AgentName): string {
 /** Deterministische, checkpoint-fähige Job-Pipeline. */
 export class JobPipeline {
   constructor(private readonly deps: PipelineDeps) {}
+
+  /** Pflichtprüfungen für explizite Nacharbeiten außerhalb der normalen Zustands-Pipeline. */
+  async verifyPostRunChanges(
+    jobId: string,
+    project: Project,
+    signal: AbortSignal,
+  ): Promise<boolean> {
+    try {
+      const worktree = this.worktree(this.mustJob(jobId));
+      const [expectedStatus, expectedStagedDiff] = await Promise.all([
+        this.deps.git.workingTreeStatus(worktree),
+        this.deps.git.stagedDiff(worktree),
+      ]);
+      return await this.testPhase(
+        jobId,
+        project,
+        this.mustJob(jobId).reviewLoopCount + 2,
+        signal,
+        this.deps.logger.child({ jobId, phase: 'github_review_verification' }),
+        { expectedStatus, expectedStagedDiff },
+      );
+    } catch (error) {
+      if (error instanceof NeedsHumanOutcome) throw new Error(error.message, { cause: error });
+      throw error;
+    }
+  }
 
   async run(jobId: string, signal: AbortSignal): Promise<void> {
     const log = this.deps.logger.child({ jobId });
@@ -205,11 +237,21 @@ export class JobPipeline {
     ticket: Ticket,
     log: Logger,
   ): Promise<void> {
-    const job = this.mustJob(jobId);
+    let job = this.mustJob(jobId);
+    if (!job.branch) {
+      const branch = await this.deps.git.allocateBranch(
+        project.repositoryPath,
+        ticket.identifier,
+        jobId,
+        branchKindForTicket(ticket.title, ticket.labels),
+      );
+      job = this.deps.repos.jobs.update(jobId, { branch });
+    }
     const result = await this.deps.git.ensureWorktree({
       repositoryPath: project.repositoryPath,
       worktreeRoot: project.worktreeRoot,
       identifier: ticket.identifier,
+      expectedBranch: job.branch,
       jobId,
       baseBranch: job.baseBranch,
       expectedBaseCommit: job.baseCommitSha,
@@ -365,7 +407,7 @@ export class JobPipeline {
     this.verifyOwner(jobId, project);
     const commit = await this.deps.git.commitAll(
       worktree,
-      `agent: ${ticket.identifier} Iteration ${iteration}`,
+      `${branchKindForTicket(ticket.title, ticket.labels)}: ${ticket.identifier} iteration ${iteration}`,
     );
     const base = this.baseCommit(job);
     const changed = await this.deps.git.changedFiles(worktree, base);
@@ -434,6 +476,7 @@ export class JobPipeline {
     iteration: number,
     signal: AbortSignal,
     log: Logger,
+    stagedSnapshot?: { expectedStatus: string; expectedStagedDiff: string },
   ): Promise<boolean> {
     if (project.commands.setup) {
       const setupOk = await this.runCommandKeys(
@@ -444,6 +487,7 @@ export class JobPipeline {
         false,
         signal,
         log,
+        stagedSnapshot,
       );
       if (!setupOk) return false;
     }
@@ -452,7 +496,16 @@ export class JobPipeline {
       this.system(jobId, 'Keine Projektprüfungen konfiguriert — Testphase übersprungen');
       return true;
     }
-    const ok = await this.runCommandKeys(jobId, project, iteration, keys, false, signal, log);
+    const ok = await this.runCommandKeys(
+      jobId,
+      project,
+      iteration,
+      keys,
+      false,
+      signal,
+      log,
+      stagedSnapshot,
+    );
     this.system(
       jobId,
       ok ? 'Alle Pflichtprüfungen bestanden' : 'Mindestens eine Pflichtprüfung ist rot',
@@ -468,6 +521,7 @@ export class JobPipeline {
     baseline: boolean,
     signal: AbortSignal,
     log: Logger,
+    stagedSnapshot?: { expectedStatus: string; expectedStagedDiff: string },
   ): Promise<boolean> {
     const worktree = this.worktree(this.mustJob(jobId));
     let allOk = true;
@@ -563,7 +617,20 @@ export class JobPipeline {
       if (afterHead !== beforeHead) {
         throw new NeedsHumanOutcome(`Prüfung '${key}' hat die Git-Historie verändert`);
       }
-      if (await this.deps.git.hasUncommittedChanges(worktree)) {
+      if (stagedSnapshot) {
+        const [afterStatus, afterStagedDiff] = await Promise.all([
+          this.deps.git.workingTreeStatus(worktree),
+          this.deps.git.stagedDiff(worktree),
+        ]);
+        if (
+          afterStatus !== stagedSnapshot.expectedStatus ||
+          afterStagedDiff !== stagedSnapshot.expectedStagedDiff
+        ) {
+          throw new NeedsHumanOutcome(
+            `Prüfung '${key}' hat die vorbereiteten Änderungen verändert`,
+          );
+        }
+      } else if (await this.deps.git.hasUncommittedChanges(worktree)) {
         throw new NeedsHumanOutcome(
           `Prüfung '${key}' hat den Worktree verändert; verwende einen rein prüfenden Befehl`,
         );

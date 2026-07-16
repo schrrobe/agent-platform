@@ -179,6 +179,8 @@ export async function createHarness(options: HarnessOptions = {}): Promise<Harne
       srtBin: 'srt',
       claudeModel: undefined,
       codexModel: undefined,
+      claudeEffort: 'high',
+      codexEffort: 'medium',
       claudeMaxBudgetUsd: undefined,
     },
     limits: {

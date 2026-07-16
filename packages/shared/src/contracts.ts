@@ -33,6 +33,27 @@ export const implementationResultSchema = z
   .strict();
 export type ImplementationResult = z.infer<typeof implementationResultSchema>;
 
+export const githubReviewResultSchema = z
+  .object({
+    version: z.literal(1),
+    summary: z.string().trim().min(1).max(10_000),
+    addressedThreadIds: z.array(z.string().trim().min(1).max(500)).max(200),
+    unaddressed: z
+      .array(
+        z
+          .object({
+            threadId: z.string().trim().min(1).max(500),
+            reason: z.string().trim().min(1).max(5_000),
+          })
+          .strict(),
+      )
+      .max(200),
+    changedFiles: nonEmptyList,
+    testsRun: nonEmptyList,
+  })
+  .strict();
+export type GithubReviewResult = z.infer<typeof githubReviewResultSchema>;
+
 export const reviewFindingSchema = z
   .object({
     severity: z.enum(['low', 'medium', 'high', 'critical']),

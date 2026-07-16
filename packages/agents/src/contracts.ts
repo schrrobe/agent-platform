@@ -1,8 +1,10 @@
 import {
   implementationResultSchema,
+  githubReviewResultSchema,
   planResultSchema,
   reviewResultSchema,
   type ImplementationResult,
+  type GithubReviewResult,
   type PlanResult,
   type ReviewResult,
 } from '@agent/shared';
@@ -58,6 +60,9 @@ export const parsePlanResult = (text: string): PlanResult =>
 export const parseImplementationResult = (text: string): ImplementationResult =>
   parseContract('Implementierungs-Ergebnis', text, implementationResultSchema);
 
+export const parseGithubReviewResult = (text: string): GithubReviewResult =>
+  parseContract('GitHub-Review-Ergebnis', text, githubReviewResultSchema);
+
 export const parseReviewResult = (text: string): ReviewResult =>
   parseContract('Review-Ergebnis', text, reviewResultSchema);
 
@@ -97,6 +102,23 @@ export function renderImplementationMarkdown(result: ImplementationResult): stri
     bullets(result.changedFiles),
     '## Planabweichungen',
     bullets(result.planDeviations),
+    '## Vom Agenten ausgeführte Prüfungen',
+    bullets(result.testsRun),
+  ].join('\n\n');
+}
+
+export function renderGithubReviewMarkdown(result: GithubReviewResult): string {
+  return [
+    '# GitHub-Review-Nacharbeit',
+    result.summary,
+    '## Erledigte Threads',
+    bullets(result.addressedThreadIds),
+    '## Noch offene Threads',
+    result.unaddressed.length > 0
+      ? result.unaddressed.map((item) => `- ${item.threadId}: ${item.reason}`).join('\n')
+      : '(keine)',
+    '## Gemeldete Dateien',
+    bullets(result.changedFiles),
     '## Vom Agenten ausgeführte Prüfungen',
     bullets(result.testsRun),
   ].join('\n\n');

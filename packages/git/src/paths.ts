@@ -8,6 +8,27 @@ export class PathValidationError extends Error {
   }
 }
 
+export const BRANCH_KINDS = ['fix', 'chore', 'feature'] as const;
+export type BranchKind = (typeof BRANCH_KINDS)[number];
+
+/** Leitet eine übliche Branch-Kategorie deterministisch aus Ticket-Metadaten ab. */
+export function branchKindForTicket(title: string, labels: readonly string[]): BranchKind {
+  const terms = [title, ...labels].map((value) => value.trim().toLowerCase());
+  if (terms.some((value) => /(^|[\s:/_-])(bug|bugfix|defect|fix|hotfix)([\s:/_-]|$)/.test(value))) {
+    return 'fix';
+  }
+  if (
+    terms.some((value) =>
+      /(^|[\s:/_-])(chore|ci|deps|dependencies|dependency|docs|documentation|maintenance|refactor|test)([\s:/_-]|$)/.test(
+        value,
+      ),
+    )
+  ) {
+    return 'chore';
+  }
+  return 'feature';
+}
+
 /** true, wenn `child` strikt innerhalb von `parent` liegt (nicht identisch). */
 export function isPathInside(parent: string, child: string): boolean {
   const rel = path.relative(path.resolve(parent), path.resolve(child));
@@ -27,8 +48,8 @@ export function identifierToSlug(identifier: string): string {
   return trimmed.toLowerCase();
 }
 
-export function branchForIdentifier(identifier: string): string {
-  return `agent/${identifierToSlug(identifier)}`;
+export function branchForIdentifier(identifier: string, kind: BranchKind = 'feature'): string {
+  return `${kind}/${identifierToSlug(identifier)}`;
 }
 
 export function jobSuffix(jobId: string): string {
@@ -39,8 +60,12 @@ export function jobSuffix(jobId: string): string {
   return normalized.replaceAll('-', '');
 }
 
-export function branchForJob(identifier: string, jobId: string): string {
-  return `agent/${identifierToSlug(identifier)}/${jobSuffix(jobId)}`;
+export function branchForJob(
+  identifier: string,
+  jobId: string,
+  kind: BranchKind = 'feature',
+): string {
+  return `${kind}/${identifierToSlug(identifier)}/${jobSuffix(jobId)}`;
 }
 
 /**

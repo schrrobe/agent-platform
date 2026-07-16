@@ -67,7 +67,7 @@ function service(responder: Responder): { git: GitService; runner: FakeRunner } 
   return { git, runner };
 }
 
-/** Standard-Responder: Repo gültig, keine Worktrees, kein Agent-Branch. */
+/** Standard-Responder: Repo gültig, keine Worktrees, kein Job-Branch. */
 function baseResponder(overrides: Responder = () => undefined): Responder {
   return (spec) => {
     const custom = overrides(spec);
@@ -78,12 +78,31 @@ function baseResponder(overrides: Responder = () => undefined): Responder {
     }
     if (hasArgs(spec, 'rev-parse', '--verify')) return { stdout: 'base123\n' };
     if (hasArgs(spec, 'worktree', 'list')) return { stdout: '' };
-    if (hasArgs(spec, 'show-ref') && spec.args.some((a) => a.includes('agent/')))
+    if (
+      hasArgs(spec, 'show-ref') &&
+      spec.args.some((a) => /refs\/heads\/(fix|chore|feature)\//.test(a))
+    )
       return { exitCode: 1 };
     if (hasArgs(spec, 'show-ref')) return { exitCode: 0 };
     return undefined;
   };
 }
+
+describe('allocateBranch', () => {
+  it('weicht bei einer vorhandenen menschlichen Branch-Kollision stabil aus', async () => {
+    const base = `feature/app-123/${JOB_SUFFIX}`;
+    const { git } = service(
+      baseResponder((spec) => {
+        if (hasArgs(spec, 'show-ref', `refs/heads/${base}`)) return { exitCode: 0 };
+        return undefined;
+      }),
+    );
+
+    await expect(git.allocateBranch(repoDir, 'APP-123', JOB_ID, 'feature')).resolves.toBe(
+      `${base}-2`,
+    );
+  });
+});
 
 describe('ensureWorktree', () => {
   it('legt Branch und Worktree neu an (add -b vom Basisbranch)', async () => {
@@ -97,7 +116,7 @@ describe('ensureWorktree', () => {
     });
 
     expect(result.created).toBe(true);
-    expect(result.branch).toBe(`agent/app-123/${JOB_SUFFIX}`);
+    expect(result.branch).toBe(`feature/app-123/${JOB_SUFFIX}`);
     expect(result.worktreePath).toBe(path.join(worktreeRoot, `app-123-${JOB_SUFFIX}`));
     expect(result.baseCommit).toBe('base123');
 
@@ -110,7 +129,7 @@ describe('ensureWorktree', () => {
       'worktree',
       'add',
       '-b',
-      `agent/app-123/${JOB_SUFFIX}`,
+      `feature/app-123/${JOB_SUFFIX}`,
       path.join(worktreeRoot, `app-123-${JOB_SUFFIX}`),
       'base123',
     ]);
@@ -121,7 +140,7 @@ describe('ensureWorktree', () => {
   it('bindet den bekannten Branch eines begonnenen Jobs ohne -b erneut an', async () => {
     const { git, runner } = service(
       baseResponder((spec) => {
-        if (hasArgs(spec, 'show-ref', `refs/heads/agent/app-123/${JOB_SUFFIX}`))
+        if (hasArgs(spec, 'show-ref', `refs/heads/feature/app-123/${JOB_SUFFIX}`))
           return { exitCode: 0 };
         return undefined;
       }),
@@ -143,7 +162,7 @@ describe('ensureWorktree', () => {
       'worktree',
       'add',
       path.join(worktreeRoot, `app-123-${JOB_SUFFIX}`),
-      `agent/app-123/${JOB_SUFFIX}`,
+      `feature/app-123/${JOB_SUFFIX}`,
     ]);
   });
 
@@ -155,7 +174,7 @@ describe('ensureWorktree', () => {
       path.join(worktreePath, '.agent', 'OWNER.json'),
       JSON.stringify({
         jobId: JOB_ID,
-        branch: `agent/app-123/${JOB_SUFFIX}`,
+        branch: `feature/app-123/${JOB_SUFFIX}`,
         repositoryPath: repoDir,
         baseCommit: 'base123',
       }),
@@ -164,7 +183,7 @@ describe('ensureWorktree', () => {
       baseResponder((spec) => {
         if (hasArgs(spec, 'worktree', 'list')) {
           return {
-            stdout: `worktree ${repoDir}\nHEAD aaa\nbranch refs/heads/main\n\nworktree ${worktreePath}\nHEAD bbb\nbranch refs/heads/agent/app-123/${JOB_SUFFIX}\n`,
+            stdout: `worktree ${repoDir}\nHEAD aaa\nbranch refs/heads/main\n\nworktree ${worktreePath}\nHEAD bbb\nbranch refs/heads/feature/app-123/${JOB_SUFFIX}\n`,
           };
         }
         return undefined;
@@ -186,7 +205,7 @@ describe('ensureWorktree', () => {
       baseResponder((spec) => {
         if (hasArgs(spec, 'worktree', 'list')) {
           return {
-            stdout: `worktree ${path.join(tmp, 'anderswo')}\nHEAD bbb\nbranch refs/heads/agent/app-123/${JOB_SUFFIX}\n`,
+            stdout: `worktree ${path.join(tmp, 'anderswo')}\nHEAD bbb\nbranch refs/heads/feature/app-123/${JOB_SUFFIX}\n`,
           };
         }
         return undefined;
@@ -452,6 +471,7 @@ describe('Diff und Status', () => {
       'core.fsmonitor=false',
       'status',
       '--porcelain',
+      '-z',
       '--',
       '.',
       ':(exclude).agent',

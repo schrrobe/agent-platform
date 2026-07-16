@@ -36,6 +36,23 @@ export function buildCodexEnv(source: NodeJS.ProcessEnv = process.env): Record<s
   return env;
 }
 
+/** Explizite GitHub-Aktionen dürfen die lokale gh-/Git-Anmeldung des Nutzers verwenden. */
+export function buildGithubEnv(source: NodeJS.ProcessEnv = process.env): Record<string, string> {
+  const env = runtimeEnv(source);
+  copy(source, env, [
+    'HOME',
+    'XDG_CONFIG_HOME',
+    'GH_TOKEN',
+    'GITHUB_TOKEN',
+    'GH_ENTERPRISE_TOKEN',
+    'GITHUB_ENTERPRISE_TOKEN',
+    'GH_HOST',
+    'SSH_AUTH_SOCK',
+  ]);
+  env.GIT_TERMINAL_PROMPT = '0';
+  return env;
+}
+
 export function buildGitEnv(
   source: NodeJS.ProcessEnv = process.env,
   isolatedHome?: string,

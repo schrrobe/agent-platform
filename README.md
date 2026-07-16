@@ -2,7 +2,7 @@
 
 Lokale Agenten-Orchestrierungsplattform. Linear-Tickets werden über ihren Identifier importiert und anschließend über ein lokales Board kontrolliert ausgeführt: Claude erstellt einen strukturierten Plan, Codex implementiert in einem jobgebundenen Git-Worktree, konfigurierte Projektprüfungen laufen in einer OS-Sandbox, und Claude führt ein strukturiertes Review durch — mit begrenzten Nacharbeitsschleifen. Der gesamte Workflow läuft lokal. Linear bleibt Datenquelle; ausschließlich ein optional aktivierter Abschlusskommentar darf geschrieben werden.
 
-- Kein automatischer Merge, kein Push, kein Force-Push, keine Branch-Löschung.
+- Kein automatischer Merge, kein Force-Push, keine Branch-Löschung; ein normaler Push ist nur als explizite GitHub-Review-Aktion möglich.
 - Keine Linear-Statusänderungen. Kommentare sind optional und standardmäßig aus.
 - Agenten mutieren **nie** Workflowzustände — validierte Ergebnisse werden allein von der deterministischen State Machine auf Übergänge abgebildet.
 - `ready_for_human` bedeutet „Agentenarbeit übergabebereit"; erst ein Mensch setzt lokal auf `done`.
@@ -75,12 +75,14 @@ verschiebbar — dort greifen **Pause** (weich, an der nächsten Phasengrenze) u
 
 Phasen pro Job:
 
-1. **Worktree**: eigener Branch `agent/<ticket>/<job>` auf einem gespeicherten Basis-Commit. Unbekannte oder schmutzige Worktrees werden niemals automatisch gelöscht oder zurückgesetzt; `.agent/` ist als Orchestratorpfad reserviert und darf im Zielrepository nicht getrackt sein.
+1. **Worktree**: eigener Branch `fix|chore|feature/<ticket>/<job>` auf einem gespeicherten Basis-Commit. Die Kategorie wird einmalig aus Titel und Labels abgeleitet und der freie Branchname vor der Worktree-Erstellung persistiert; Re-Imports oder Restarts verändern ihn nicht. Unbekannte oder schmutzige Worktrees werden niemals automatisch gelöscht oder zurückgesetzt; `.agent/` ist als Orchestratorpfad reserviert und darf im Zielrepository nicht getrackt sein.
 2. **Preflight**: optionales Setup und Baseline-Prüfungen. Eine bereits rote Basis stoppt vor der Implementierung.
 3. **Plan** (Claude, lesend): validierter JSON-Vertrag, daraus `.agent/PLAN.md`. Je nach Policy folgt die menschliche Freigabe; Antworten werden als eigenes Artefakt gespeichert.
 4. **Implementierung** (Codex, workspace-write-Sandbox): setzt den unveränderlichen Plan um und liefert einen validierten Implementierungsbericht; der Orchestrator committet ohne Git-Hooks.
 5. **Testphase**: `setup` sowie rein prüfende Befehle (`format`/`lint`/`typecheck`/`test`/`build`) mit Timeout. Unabhängige Checks werden gesammelt ausgeführt. Änderungen am Worktree/Git-HEAD oder gekappte Ausgabe ⇒ `needs_human`.
 6. **Review** (Claude, lesend): validierter Vertrag mit Verdict, Findings und offenen Akzeptanzkriterien. `FAIL` führt begrenzt zur Nacharbeit; `PASS` erzeugt einen Handoff-Bericht und endet in `ready_for_human` (ohne Merge/Push).
+
+Nach dem Durchgang kann in `ready_for_human` oder `done` die Aktion **GitHub-Kommentare mit Codex** gestartet werden. Sie belegt denselben Queue-/Projektschreibslot wie die normale Pipeline, lädt alle offenen Review-Threads samt paginierten Antworten und lässt Codex berechtigte Hinweise im Worktree umsetzen. Der gestagte Diff wird gegen die Projektlimits geprüft und die konfigurierten Projektprüfungen laufen noch vor dem Commit. Bei Fehlern davor werden ausschließlich die Änderungen dieser Aktion auf den zuvor sauberen HEAD zurückgesetzt. Erst nach bestandenen Checks wird committet, der Upstream synchronisiert und sein SHA verifiziert; anschließend werden die von Codex vollständig erledigten Threads als resolved markiert. Die Aktion bleibt bis dahin sichtbar aktiv und kann normal abgebrochen werden. Voraussetzung sind ein offener Pull Request, ein Upstream für den Job-Branch sowie eine funktionierende lokale `gh`- und GitHub-Git-Anmeldung.
 
 Pause speichert die nächste Phase als Checkpoint. Fortsetzen beginnt dort und führt Planung, Implementierung oder Tests nicht unnötig erneut aus.
 
@@ -90,6 +92,7 @@ Pause speichert die nächste Phase als Checkpoint. Fortsetzen beginnt dort und f
 - **pnpm 10** (per Corepack). Kein npm/Yarn.
 - **git ≥ 2.30** (Worktree-Unterstützung).
 - **Claude Code CLI** (`claude`) und **Codex CLI** (`codex`) auf dem `PATH`, wenn echte Agentenläufe gewünscht sind. Ohne sie funktionieren Import, Board und Tests dennoch.
+- **GitHub CLI** (`gh`) mit Anmeldung sowie ein bereits gepushter Branch mit Upstream, wenn GitHub-Review-Kommentare aus dem Dashboard bearbeitet werden sollen.
 - **Sandbox Runtime** (`srt`) wird als pnpm-Abhängigkeit installiert. Unter Linux benötigt sie `bubblewrap`, `socat` und `ripgrep`; macOS nutzt das vorhandene `sandbox-exec`.
 - Ein **Linear-API-Key** für den Ticketimport (optional; ohne Key sind alle anderen Funktionen nutzbar).
 
@@ -111,7 +114,7 @@ pnpm dev                   # startet Orchestrator (:8787) und Dashboard (:5173) 
 2. Planfreigabe, Sandboxmodus, Baseline und Diff-Limits wählen; `format` muss ein prüfender Befehl wie `format:check` sein.
 3. Ein Ticket per Linear-Identifier importieren und von **Inbox** nach **Agent Ready** ziehen.
 4. Falls der Job auf **Planfreigabe** hält, `PLAN.md` prüfen, offene Fragen beantworten und freigeben.
-5. In **Ready for Human** Handoff, exakten Base-/Head-SHA, Diff und Testergebnisse prüfen. Erst danach lokal als `done` bestätigen oder den Branch außerhalb der Plattform pushen/mergen.
+5. In **Ready for Human** Handoff, exakten Base-/Head-SHA, Diff und Testergebnisse prüfen. Für einen bereits vorhandenen Pull Request können offene Review-Threads per **GitHub-Kommentare mit Codex** nachbearbeitet werden. Erst danach lokal als `done` bestätigen oder den Branch außerhalb der Plattform mergen.
 
 ### macOS-Setup
 
@@ -155,27 +158,28 @@ und nicht erforderlich.
 Kopiere `.env.example` nach `.env`. Die Konfiguration wird beim Start mit Zod validiert; bei
 ungültigen Werten bricht der Orchestrator mit einer verständlichen Meldung ab.
 
-| Variable                       | Standard                 | Zweck                                                                   |
-| ------------------------------ | ------------------------ | ----------------------------------------------------------------------- |
-| `NODE_ENV`                     | `development`            | Betriebsmodus                                                           |
-| `HOST`                         | `127.0.0.1`              | Bind-Adresse (VPS: `0.0.0.0`)                                           |
-| `PORT`                         | `8787`                   | Port des Orchestrators                                                  |
-| `DATABASE_PATH`                | `./data/orchestrator.db` | SQLite-Datei (relativ zum Aufrufverzeichnis)                            |
-| `DATA_DIR`                     | `./data`                 | Datenverzeichnis (Logs, Codex-Ausgaben)                                 |
-| `LINEAR_API_KEY`               | –                        | Linear-Import und optional aktivierter Handoff-Kommentar                |
-| `LINEAR_WRITE_COMMENTS`        | `false`                  | Wenn `true`, darf ein Abschlusskommentar nach Linear geschrieben werden |
-| `REPO_ROOT` / `WORKTREE_ROOT`  | –                        | Vorschlagswerte für neue Projekte                                       |
-| `BASE_BRANCH`                  | `main`                   | Standard-Basisbranch                                                    |
-| `CLAUDE_BIN` / `CODEX_BIN`     | `claude` / `codex`       | Pfad/Name der CLIs                                                      |
-| `SRT_BIN`                      | `srt`                    | Sandbox-Runtime für Projektbefehle                                      |
-| `CLAUDE_MODEL` / `CODEX_MODEL` | –                        | Optionale Modell-Overrides                                              |
-| `CLAUDE_MAX_BUDGET_USD`        | –                        | Optionales Kostenlimit pro Claude-Aufruf                                |
-| `MAX_REVIEW_LOOPS`             | `3`                      | Maximale Nacharbeitsschleifen                                           |
-| `MAX_JOB_RUNTIME_MINUTES`      | `60`                     | Hartes Job-Zeitlimit                                                    |
-| `MAX_AGENT_OUTPUT_MB`          | `10`                     | Obergrenze erfasster Agenten-/Prüfausgabe; Kürzung eskaliert            |
-| `MAX_CONCURRENT_JOBS`          | `1`                      | Gleichzeitig laufende Jobs                                              |
-| `TEST_COMMAND_TIMEOUT_MINUTES` | `10`                     | Timeout je Prüfbefehl                                                   |
-| `LOG_LEVEL`                    | `info`                   | Pino-Loglevel                                                           |
+| Variable                         | Standard                 | Zweck                                                                   |
+| -------------------------------- | ------------------------ | ----------------------------------------------------------------------- |
+| `NODE_ENV`                       | `development`            | Betriebsmodus                                                           |
+| `HOST`                           | `127.0.0.1`              | Bind-Adresse (VPS: `0.0.0.0`)                                           |
+| `PORT`                           | `8787`                   | Port des Orchestrators                                                  |
+| `DATABASE_PATH`                  | `./data/orchestrator.db` | SQLite-Datei (relativ zum Aufrufverzeichnis)                            |
+| `DATA_DIR`                       | `./data`                 | Datenverzeichnis (Logs, Codex-Ausgaben)                                 |
+| `LINEAR_API_KEY`                 | –                        | Linear-Import und optional aktivierter Handoff-Kommentar                |
+| `LINEAR_WRITE_COMMENTS`          | `false`                  | Wenn `true`, darf ein Abschlusskommentar nach Linear geschrieben werden |
+| `REPO_ROOT` / `WORKTREE_ROOT`    | –                        | Vorschlagswerte für neue Projekte                                       |
+| `BASE_BRANCH`                    | `main`                   | Standard-Basisbranch                                                    |
+| `CLAUDE_BIN` / `CODEX_BIN`       | `claude` / `codex`       | Pfad/Name der CLIs                                                      |
+| `SRT_BIN`                        | `srt`                    | Sandbox-Runtime für Projektbefehle                                      |
+| `CLAUDE_MODEL` / `CODEX_MODEL`   | `opus` / `gpt-5.6-sol`   | Modell-Overrides; leer verwendet den jeweiligen CLI-Default             |
+| `CLAUDE_EFFORT` / `CODEX_EFFORT` | `high` / `medium`        | Reasoning-Effort der jeweiligen CLI                                     |
+| `CLAUDE_MAX_BUDGET_USD`          | –                        | Optionales Kostenlimit pro Claude-Aufruf                                |
+| `MAX_REVIEW_LOOPS`               | `3`                      | Maximale Nacharbeitsschleifen                                           |
+| `MAX_JOB_RUNTIME_MINUTES`        | `60`                     | Hartes Job-Zeitlimit                                                    |
+| `MAX_AGENT_OUTPUT_MB`            | `10`                     | Obergrenze erfasster Agenten-/Prüfausgabe; Kürzung eskaliert            |
+| `MAX_CONCURRENT_JOBS`            | `1`                      | Gleichzeitig laufende Jobs                                              |
+| `TEST_COMMAND_TIMEOUT_MINUTES`   | `10`                     | Timeout je Prüfbefehl                                                   |
+| `LOG_LEVEL`                      | `info`                   | Pino-Loglevel                                                           |
 
 Projektbezogene Policies werden im Dashboard gespeichert:
 
@@ -239,7 +243,7 @@ Repository-Dateien, Markdown, Agentenantworten, Testausgaben, Git-Diffs.
 
 - **Prompt-Injection und Verträge**: Untrusted-Inhalte werden als Daten gerahmt. Claude läuft im `--safe-mode`, der CLAUDE.md, Skills, Plugins, Hooks und MCP-Konfigurationen deaktiviert. Plan und Review werden bereits per CLI-JSON-Schema und danach nochmals mit Zod geprüft; auch der Implementierungsbericht ist ein versionierter Zod-Vertrag. Inkonsistente, ungültige oder gekappte Ergebnisse ⇒ `needs_human`.
 - **Prozessausführung**: `spawn` ohne Shell, getrennte Argumente, explizites Arbeitsverzeichnis, Timeouts, Ausgabe-Obergrenze (Kopf + Tail) und Prozessgruppen-Kill. Claude-, Codex-, Git- und Testumgebungen sind getrennt; Tests erhalten keine Agenten-Secrets.
-- **Git**: Push, Merge, Force-Push und Branch-Löschung existieren nicht. Jeder Job besitzt Branch, Pfad, Eigentümerdatei und Basis-SHA. Unbekannte/schmutzige Worktrees werden weder gelöscht noch per `reset --hard` bereinigt. Commits laufen mit deaktivierten Hooks und isolierter globaler Konfiguration. `.agent/` bleibt aus Commits/Diffs/Status ausgeschlossen.
+- **Git**: Der normale Workflow pusht und mergt nicht. Die explizite GitHub-Review-Aktion darf ausschließlich den aktuellen Job-Branch ohne Force auf dessen bereits konfigurierten Upstream pushen; Merge, Force-Push und Branch-Löschung existieren weiterhin nicht. Review-Threads werden erst nach verifiziertem Remote-SHA aufgelöst. Jeder Job besitzt Branch, Pfad, Eigentümerdatei und Basis-SHA. Fremde oder bereits schmutzige Worktrees werden nie bereinigt; nur wenn die GitHub-Aktion selbst auf einem zuvor nachweislich sauberen Worktree fehlschlägt, verwirft sie ihre noch nicht committeten Änderungen gegen den zuvor gespeicherten HEAD. Commits laufen mit deaktivierten Hooks. `.agent/` bleibt aus Commits/Diffs/Status ausgeschlossen.
 - **Sandbox**: Codex läuft in `workspace-write` mit deaktiviertem Netzwerk. Claude besitzt ausschließlich Read/Glob/Grep, keine schreibenden/Bash-Tools und keine Projekt-Customizations; diese Toolgrenze ist dennoch keine allgemeine OS-Lesesandbox. Projektbefehle laufen standardmäßig über Anthropic Sandbox Runtime (`sandbox-exec`/`bubblewrap`) mit gesperrtem Netzwerk, temporärem `HOME`, geschützten Credential-Pfaden und Schreibrechten nur für Worktree/Sandbox-Temp. `trusted` ist ein expliziter, sichtbar markierter Opt-out.
 - **Completion-Policy**: Baseline, alle Pflichtchecks, sauberer Worktree, unverändertes Git-HEAD, Diff-Limits, Binärdateien, gesperrte Pfade und unveränderte Basis werden deterministisch geprüft. Agenten können diese Gates nicht überspringen.
 - **Pfadvalidierung**: Ticket-/Job-Identifier werden validiert; Worktree-Pfade müssen innerhalb des konfigurierten Roots liegen. Unbekannte Verzeichnisse werden nie automatisch entfernt.
@@ -256,7 +260,7 @@ Der persistierte **Orchestratorzustand** liegt unter `DATA_DIR` (Standard `./dat
 
 Backup bei gestopptem Orchestrator per Kopie des `data/`-Verzeichnisses, oder online mit
 `sqlite3 data/orchestrator.db ".backup data/backup.db"`. Die Git-Worktrees selbst liegen im
-konfigurierten `worktreeRoot`. Die erzeugten Commits liegen jedoch im Git-Objektspeicher des konfigurierten Repositories und sind **nicht** vollständig in `DATA_DIR` enthalten. Ein vollständiges Backup umfasst daher zusätzlich das Repository beziehungsweise ein Git-Bundle der Agent-Branches, z. B. `git -C <repo> bundle create agent-backup.bundle --branches='agent/*'`. Worktrees sind erst dann aus dem Repository rekonstruierbar, wenn diese Git-Objekte gesichert wurden.
+konfigurierten `worktreeRoot`. Die erzeugten Commits liegen jedoch im Git-Objektspeicher des konfigurierten Repositories und sind **nicht** vollständig in `DATA_DIR` enthalten. Ein vollständiges Backup umfasst daher zusätzlich das Repository beziehungsweise ein Git-Bundle der Job-Branches, z. B. `git -C <repo> bundle create job-backup.bundle --branches='feature/*' --branches='fix/*' --branches='chore/*'`. Worktrees sind erst dann aus dem Repository rekonstruierbar, wenn diese Git-Objekte gesichert wurden.
 
 ## Fehlerbehebung
 
@@ -265,6 +269,7 @@ konfigurierten `worktreeRoot`. Die erzeugten Commits liegen jedoch im Git-Objekt
 - **Import schlägt fehl (`LINEAR_ERROR`)**: `LINEAR_API_KEY` gesetzt? Identifier korrekt (`APP-123`)?
 - **Job endet sofort `failed` mit „Ungültiger Ticket-Identifier"**: Identifier muss dem Muster `ABC-123` entsprechen.
 - **Job „Durch Neustart unterbrochen"**: Der Orchestrator wurde während eines Laufs beendet; per **Erneut** neu starten.
+- **GitHub-Nacharbeit durch Neustart unterbrochen**: Der Job bleibt in `ready_for_human`/`done`; sichere uncommittierte Aktionsreste wurden entfernt. Bei einem zusätzlichen Aufräumhinweis den Worktree manuell prüfen, danach die Aktion erneut starten.
 - **Sandbox Runtime startet nicht**: Linux-Pakete `bubblewrap socat ripgrep` installieren und `SRT_BIN` prüfen. Nur für vollständig vertrauenswürdige Repositories den Projektmodus bewusst auf `trusted` setzen.
 - **Baseline ist rot**: Basisbranch beziehungsweise Projekt-Setup außerhalb des Agentenlaufs reparieren; erst danach erneut starten. Die Plattform lässt bekannte rote Pflichtchecks nicht still passieren.
 - **„Prüfung hat den Worktree verändert"**: einen lesenden Check konfigurieren (`format:check` statt `format`); Testgeneratoren müssen ihre Ausgaben ignorieren oder außerhalb getrackter Pfade schreiben.
@@ -276,7 +281,7 @@ konfigurierten `worktreeRoot`. Die erzeugten Commits liegen jedoch im Git-Objekt
 ## Bekannte Einschränkungen
 
 - Keine eingebaute Authentifizierung/Mandantentrennung — für lokalen Betrieb bzw. hinter Reverse-Proxy gedacht.
-- Job-Queue ist in-process (kein verteiltes Scheduling); Standard-Parallelität 1, pro Projekt ein Schreibjob.
+- Job-Queue ist in-process (kein verteiltes Scheduling); Standard-Parallelität 1, pro Projekt ein Schreibjob einschließlich GitHub-Nacharbeit.
 - Kein automatischer Merge/PR — bewusst; `ready_for_human` ist ein Agent-Ausführungsstatus und kein Linear-Ticketstatus.
 - `trusted`-Testmodus besitzt keine OS-Isolation und ist ausschließlich für vollständig vertrauenswürdige Repositories vorgesehen.
 - Der sichere Testmodus sperrt Netzwerk vollständig; eine granulare projektbezogene Domain-Allowlist ist noch nicht vorhanden.

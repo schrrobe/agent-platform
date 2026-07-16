@@ -1,7 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import type { ProcessResult, ProcessRunner } from '@agent/shared';
-import { branchForJob, isSameOrInside, worktreePathForJob } from './paths.js';
+import { branchForJob, isSameOrInside, worktreePathForJob, type BranchKind } from './paths.js';
 
 /**
  * Sichere Git-Fassade. Bewusst NICHT vorhanden: push, merge, force-push,
@@ -49,6 +49,9 @@ export interface EnsureWorktreeInput {
   repositoryPath: string;
   worktreeRoot: string;
   identifier: string;
+  branchKind?: BranchKind;
+  /** Bereits persistierter Branch; hält begonnene Jobs über Namensänderungen hinweg fortsetzbar. */
+  expectedBranch?: string | null;
   jobId: string;
   baseBranch: string;
   expectedBaseCommit?: string | null;
@@ -173,6 +176,21 @@ export class GitService {
     return result.exitCode === 0;
   }
 
+  /** Wählt vor der Persistierung einen freien, konventionellen Job-Branch. */
+  async allocateBranch(
+    repositoryPath: string,
+    identifier: string,
+    jobId: string,
+    kind: BranchKind,
+  ): Promise<string> {
+    const base = branchForJob(identifier, jobId, kind);
+    for (let attempt = 0; attempt < 100; attempt += 1) {
+      const candidate = attempt === 0 ? base : `${base}-${attempt + 1}`;
+      if (!(await this.branchExists(repositoryPath, candidate))) return candidate;
+    }
+    throw new GitConflictError(`Kein freier Branchname für ${identifier} gefunden`);
+  }
+
   private async hasTrackedAgentDirectory(repositoryPath: string, ref: string): Promise<boolean> {
     const result = await this.git(repositoryPath, [
       'ls-tree',
@@ -265,7 +283,8 @@ export class GitService {
    */
   async ensureWorktree(input: EnsureWorktreeInput): Promise<EnsureWorktreeResult> {
     const repositoryPath = path.resolve(input.repositoryPath);
-    const branch = branchForJob(input.identifier, input.jobId);
+    const branch =
+      input.expectedBranch ?? branchForJob(input.identifier, input.jobId, input.branchKind);
     const worktreePath = worktreePathForJob(input.worktreeRoot, input.identifier, input.jobId);
 
     const canonicalRepositoryPath = canonicalPath(repositoryPath);
@@ -440,24 +459,49 @@ export class GitService {
 
   /** Arbeitszustand ohne `.agent/`: leer = keine offenen Änderungen. */
   async hasUncommittedChanges(worktreePath: string): Promise<boolean> {
+    return (await this.workingTreeStatus(worktreePath)).trim().length > 0;
+  }
+
+  async workingTreeStatus(worktreePath: string): Promise<string> {
     const result = await this.git(worktreePath, [
       '-c',
       'core.fsmonitor=false',
       'status',
       '--porcelain',
+      '-z',
       '--',
       '.',
       EXCLUDE_AGENT,
     ]);
-    return result.stdout.trim().length > 0;
+    return result.stdout;
+  }
+
+  /** Verwirft ausschließlich Änderungen eines zuvor sauberen Job-Worktrees. */
+  async discardJobChanges(worktreePath: string, expectedHead: string): Promise<void> {
+    const head = await this.currentHead(worktreePath);
+    if (head !== expectedHead) {
+      throw new GitConflictError(
+        `Git-HEAD wurde während der Aktion verändert (${head}, erwartet ${expectedHead}); kein automatisches Aufräumen`,
+      );
+    }
+    await this.git(worktreePath, [
+      '-c',
+      'core.hooksPath=/dev/null',
+      '-c',
+      'core.fsmonitor=false',
+      'reset',
+      '--hard',
+      expectedHead,
+    ]);
+    await this.git(worktreePath, ['clean', '-fd', '--', '.', EXCLUDE_AGENT]);
+    await this.assertWorktreeClean(worktreePath);
   }
 
   /**
-   * Staged und committet alle Änderungen außer `.agent/`. Identität kommt aus
-   * Umgebungsvariablen — die globale Git-Konfiguration bleibt unberührt.
-   * @returns Commit-Hash oder null, wenn nichts zu committen war.
+   * Staged alle Änderungen außer `.agent/`, damit Policies vor dem Commit auf
+   * dem vollständigen Index (einschließlich neuer Dateien) prüfen können.
    */
-  async commitAll(worktreePath: string, message: string): Promise<string | null> {
+  async stageAll(worktreePath: string): Promise<void> {
     await this.assertNoWorktreeFilters(worktreePath);
     await this.git(worktreePath, [
       '-c',
@@ -468,6 +512,12 @@ export class GitService {
       '.',
       EXCLUDE_AGENT,
     ]);
+    // Ein Agent könnte `.agent/` selbst gestaged haben; der reservierte Pfad darf nie committen.
+    await this.git(worktreePath, ['reset', '--quiet', '--', AGENT_DIR], { allowFailure: true });
+  }
+
+  /** Committet den bereits geprüften Index. */
+  async commitStaged(worktreePath: string, message: string): Promise<string | null> {
     const staged = await this.git(worktreePath, ['diff', '--no-ext-diff', '--cached', '--quiet'], {
       allowFailure: true,
     });
@@ -498,6 +548,50 @@ export class GitService {
     return head.stdout.trim();
   }
 
+  /** Staged und committet alle Änderungen außer `.agent/`. */
+  async commitAll(worktreePath: string, message: string): Promise<string | null> {
+    await this.stageAll(worktreePath);
+    return this.commitStaged(worktreePath, message);
+  }
+
+  async stagedChangedFiles(worktreePath: string): Promise<ChangedFile[]> {
+    const result = await this.git(worktreePath, [
+      'diff',
+      '--no-ext-diff',
+      '--cached',
+      '--name-status',
+      '--',
+      '.',
+      EXCLUDE_AGENT,
+    ]);
+    return this.parseChangedFiles(result.stdout);
+  }
+
+  async stagedDiff(worktreePath: string): Promise<string> {
+    const result = await this.git(worktreePath, [
+      'diff',
+      '--no-ext-diff',
+      '--cached',
+      '--',
+      '.',
+      EXCLUDE_AGENT,
+    ]);
+    return result.stdout;
+  }
+
+  async stagedBinaryChangedFiles(worktreePath: string): Promise<string[]> {
+    const result = await this.git(worktreePath, [
+      'diff',
+      '--no-ext-diff',
+      '--cached',
+      '--numstat',
+      '--',
+      '.',
+      EXCLUDE_AGENT,
+    ]);
+    return this.parseBinaryChangedFiles(result.stdout);
+  }
+
   private async diffRange(
     worktreePath: string,
     baseRef: string,
@@ -522,6 +616,10 @@ export class GitService {
 
   async changedFiles(worktreePath: string, baseBranch: string): Promise<ChangedFile[]> {
     const stdout = await this.diffRange(worktreePath, baseBranch, ['--name-status']);
+    return this.parseChangedFiles(stdout);
+  }
+
+  private parseChangedFiles(stdout: string): ChangedFile[] {
     return stdout
       .split('\n')
       .map((line) => line.trim())
@@ -559,6 +657,10 @@ export class GitService {
 
   async binaryChangedFiles(worktreePath: string, baseRef: string): Promise<string[]> {
     const stdout = await this.diffRange(worktreePath, baseRef, ['--numstat']);
+    return this.parseBinaryChangedFiles(stdout);
+  }
+
+  private parseBinaryChangedFiles(stdout: string): string[] {
     return stdout
       .split('\n')
       .map((line) => line.split('\t'))

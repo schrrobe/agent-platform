@@ -61,7 +61,9 @@ onMounted(async () => {
       <h3>Sicherheitsmodell</h3>
       <p class="muted">
         Agenten laufen sandboxed im Ticket-Worktree. Es findet niemals ein automatischer Merge oder
-        Push statt, keine Linear-Statusänderung, und Agenten entscheiden nie über Workflowzustände.
+        Push statt. Nur die ausdrücklich gestartete GitHub-Review-Aktion darf den aktuellen
+        Job-Branch ohne Force auf seinen vorhandenen Upstream pushen. Es gibt keine
+        Linear-Statusänderung, und Agenten entscheiden nie über Workflowzustände.
       </p>
     </section>
   </div>

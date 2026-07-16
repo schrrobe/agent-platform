@@ -63,7 +63,13 @@ function baseInput(overrides: Partial<AgentExecutionInput> = {}): AgentExecution
 describe('ClaudeCodeAdapter', () => {
   it('baut strikt lesende, non-interaktive Argumente', async () => {
     const runner = new RecordingRunner(makeResult({ stdout: '{"result":"PLAN"}' }));
-    const adapter = new ClaudeCodeAdapter({ runner, env: {}, model: 'sonnet', maxBudgetUsd: 2 });
+    const adapter = new ClaudeCodeAdapter({
+      runner,
+      env: {},
+      model: 'sonnet',
+      effort: 'high',
+      maxBudgetUsd: 2,
+    });
     await adapter.execute(baseInput());
 
     const args = runner.lastSpec?.args ?? [];
@@ -78,6 +84,7 @@ describe('ClaudeCodeAdapter', () => {
     });
     expect(args).toContain('--no-session-persistence');
     expect(args).toEqual(expect.arrayContaining(['--model', 'sonnet']));
+    expect(args).toEqual(expect.arrayContaining(['--effort', 'high']));
     expect(args).toEqual(expect.arrayContaining(['--max-budget-usd', '2']));
     // Sandbox-Bypass-Flags dürfen NIE vorkommen.
     expect(args).not.toContain('--dangerously-skip-permissions');
@@ -147,7 +154,13 @@ describe('CodexCliAdapter', () => {
 
   it('baut sandbox-begrenzte Argumente mit Worktree-Wurzel', async () => {
     const runner = new RecordingRunner(makeResult({ stdout: 'egal' }));
-    const adapter = new CodexCliAdapter({ runner, env: {}, lastMessageDir: dir, model: 'gpt-x' });
+    const adapter = new CodexCliAdapter({
+      runner,
+      env: {},
+      lastMessageDir: dir,
+      model: 'gpt-x',
+      reasoningEffort: 'medium',
+    });
     await adapter.execute(baseInput({ phase: 'implement' }));
 
     const args = runner.lastSpec?.args ?? [];
@@ -158,6 +171,7 @@ describe('CodexCliAdapter', () => {
     expect(args).toContain('--ignore-user-config');
     expect(args).toEqual(expect.arrayContaining(['--color', 'never']));
     expect(args).toEqual(expect.arrayContaining(['-m', 'gpt-x']));
+    expect(args).toEqual(expect.arrayContaining(['-c', 'model_reasoning_effort=medium']));
     expect(args).not.toContain('--dangerously-bypass-approvals-and-sandbox');
     expect(args).not.toContain('--full-auto');
     expect(args.at(-1)).toBe('PROMPT-INHALT');

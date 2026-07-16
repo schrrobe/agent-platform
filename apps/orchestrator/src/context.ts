@@ -8,6 +8,7 @@ import {
   buildClaudeEnv,
   buildCodexEnv,
   buildGitEnv,
+  buildGithubEnv,
 } from '@agent/agents';
 import { GitService } from '@agent/git';
 import { LinearService } from '@agent/linear';
@@ -21,6 +22,8 @@ import { TestSandbox } from './services/test-sandbox.js';
 import { JobPipeline } from './pipeline/pipeline.js';
 import { JobQueue } from './pipeline/queue.js';
 import { JobService } from './services/job-service.js';
+import { GithubCliClient } from './services/github-client.js';
+import { GithubReviewService } from './services/github-review.js';
 
 export interface AppContext {
   config: AppConfig;
@@ -37,6 +40,7 @@ export interface AppContext {
   queue: JobQueue;
   pipeline: JobPipeline;
   jobs: JobService;
+  githubReviews: GithubReviewService;
 }
 
 export interface ContextOverrides {
@@ -59,6 +63,7 @@ export function createContext(
   const gitEnv = buildGitEnv(process.env, gitHome);
   const claudeEnv = buildClaudeEnv(process.env);
   const codexEnv = buildCodexEnv(process.env);
+  const githubEnv = buildGithubEnv(process.env);
 
   const executor = new ProcessExecutor();
   const git = new GitService({ runner: executor, env: gitEnv });
@@ -79,6 +84,7 @@ export function createContext(
     env: claudeEnv,
     bin: config.agents.claudeBin,
     model: config.agents.claudeModel,
+    effort: config.agents.claudeEffort,
     maxBudgetUsd: config.agents.claudeMaxBudgetUsd,
   });
   const codex = new CodexCliAdapter({
@@ -86,6 +92,7 @@ export function createContext(
     env: codexEnv,
     bin: config.agents.codexBin,
     model: config.agents.codexModel,
+    reasoningEffort: config.agents.codexEffort,
     lastMessageDir: path.join(config.dataDir, 'codex-runs'),
   });
 
@@ -105,6 +112,18 @@ export function createContext(
   const queue = new JobQueue({ pipeline, config, logger, repos });
   const mutex = new KeyedMutex();
   const jobs = new JobService({ config, repos, publisher, queue, linear, logStore, mutex });
+  const github = new GithubCliClient(executor, githubEnv);
+  const githubReviews = new GithubReviewService({
+    config,
+    repos,
+    git,
+    codex,
+    github,
+    publisher,
+    logStore,
+    queue,
+    pipeline,
+  });
 
   return {
     config,
@@ -121,5 +140,6 @@ export function createContext(
     queue,
     pipeline,
     jobs,
+    githubReviews,
   };
 }

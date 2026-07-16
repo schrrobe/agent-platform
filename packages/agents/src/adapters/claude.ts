@@ -9,6 +9,7 @@ export interface ClaudeAdapterOptions {
   env: Record<string, string>;
   bin?: string;
   model?: string;
+  effort?: 'low' | 'medium' | 'high';
   maxBudgetUsd?: number;
 }
 
@@ -23,11 +24,13 @@ export interface ClaudeAdapterOptions {
 export class ClaudeCodeAdapter extends CliAgentAdapter {
   readonly name = 'claude';
   private readonly model: string | undefined;
+  private readonly effort: 'low' | 'medium' | 'high' | undefined;
   private readonly maxBudgetUsd: number | undefined;
 
   constructor(options: ClaudeAdapterOptions) {
     super({ runner: options.runner, env: options.env, bin: options.bin ?? 'claude' });
     this.model = options.model;
+    this.effort = options.effort;
     this.maxBudgetUsd = options.maxBudgetUsd;
   }
 
@@ -46,6 +49,7 @@ export class ClaudeCodeAdapter extends CliAgentAdapter {
     const schema = input.phase === 'plan' ? PLAN_RESULT_JSON_SCHEMA : REVIEW_RESULT_JSON_SCHEMA;
     args.push('--json-schema', JSON.stringify(schema));
     if (this.model) args.push('--model', this.model);
+    if (this.effort) args.push('--effort', this.effort);
     if (this.maxBudgetUsd != null) args.push('--max-budget-usd', String(this.maxBudgetUsd));
     args.push(input.prompt);
     return args;
