@@ -135,6 +135,10 @@ export const logsQuerySchema = z.object({
   afterSeq: z.coerce.number().int().min(0).optional(),
 });
 
+export const assignedIssuesQuerySchema = z.object({
+  limit: z.coerce.number().int().min(1).max(100).default(50),
+});
+
 export type ProjectCreateInput = z.infer<typeof projectCreateSchema>;
 export type ProjectUpdateInput = z.infer<typeof projectUpdateSchema>;
 export type ImportRequestInput = z.infer<typeof importRequestSchema>;

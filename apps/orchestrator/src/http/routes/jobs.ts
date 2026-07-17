@@ -1,5 +1,6 @@
 import type { FastifyInstance } from 'fastify';
 import {
+  assignedIssuesQuerySchema,
   bulkImportRequestSchema,
   importRequestSchema,
   jobCleanupSchema,
@@ -17,6 +18,11 @@ export function registerJobRoutes(app: FastifyInstance, ctx: AppContext): void {
   app.get('/api/jobs/:id', async (request) => {
     const { id } = request.params as { id: string };
     return { job: ctx.jobs.getDetail(id) };
+  });
+
+  app.get('/api/linear/assigned-issues', async (request) => {
+    const { limit } = parseBody(assignedIssuesQuerySchema, request.query);
+    return { issues: await ctx.jobs.listImportableTickets(limit) };
   });
 
   app.post('/api/jobs/import', async (request, reply) => {

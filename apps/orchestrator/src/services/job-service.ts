@@ -9,6 +9,7 @@ import {
   type JobDetail,
   type JobState,
   type JobSummary,
+  type LinearAssignedIssue,
   type PipelinePhase,
 } from '@agent/shared';
 import type { Repositories } from '@agent/database';
@@ -104,6 +105,28 @@ export class JobService {
       const summary = this.getSummary(job.id);
       this.deps.publisher.emit('job.created', job.id, { job: summary });
       return summary;
+    });
+  }
+
+  /**
+   * Listet die dem API-Token zugewiesenen, offenen Linear-Tickets und markiert,
+   * welche davon bereits importiert wurden (inkl. Zielprojekt).
+   */
+  async listImportableTickets(limit = 50): Promise<LinearAssignedIssue[]> {
+    let issues;
+    try {
+      issues = await this.deps.linear.listAssignedIssues(limit);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      throw new JobServiceError('LINEAR_ERROR', message);
+    }
+    return issues.map((issue) => {
+      const existing = this.deps.repos.tickets.getByLinearIssueId(issue.linearIssueId);
+      return {
+        ...issue,
+        alreadyImported: Boolean(existing),
+        existingProjectId: existing?.projectId ?? null,
+      };
     });
   }
 

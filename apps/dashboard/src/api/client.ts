@@ -7,6 +7,7 @@ import type {
   GithubReviewActionResult,
   JobState,
   JobSummary,
+  LinearAssignedIssue,
   LogLine,
   Project,
   ProjectCreateInput,
@@ -85,6 +86,10 @@ export const api = {
 
   listJobs: () => request<{ jobs: JobSummary[] }>('/api/jobs').then((r) => r.jobs),
   getJob: (id: string) => request<{ job: JobDetail }>(`/api/jobs/${id}`).then((r) => r.job),
+  listAssignedIssues: (limit = 50) =>
+    request<{ issues: LinearAssignedIssue[] }>(
+      `/api/linear/assigned-issues?limit=${limit}`,
+    ).then((r) => r.issues),
   importTicket: (input: ImportRequestInput) =>
     request<{ job: JobSummary }>('/api/jobs/import', {
       method: 'POST',

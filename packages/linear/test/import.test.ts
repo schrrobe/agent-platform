@@ -109,6 +109,75 @@ describe('LinearService.fetchTicket', () => {
   });
 });
 
+describe('LinearService.listAssignedIssues', () => {
+  it('mappt zugewiesene Tickets auf schlanke Zusammenfassungen', async () => {
+    const issues = vi.fn(async () => ({
+      nodes: [
+        fakeIssue(),
+        fakeIssue({
+          id: 'uuid-2',
+          identifier: 'WEB-7',
+          title: 'Zweites Ticket',
+          team: Promise.resolve({ key: 'WEB', name: 'Web-Team' }),
+          state: Promise.resolve({ name: 'In Progress' }),
+        }),
+      ],
+    }));
+    const service = new LinearService({ client: { issue: vi.fn(), issues } });
+
+    const list = await service.listAssignedIssues();
+
+    expect(issues).toHaveBeenCalledWith({
+      first: 50,
+      orderBy: 'updatedAt',
+      filter: {
+        assignee: { isMe: { eq: true } },
+        state: { type: { nin: ['completed', 'canceled'] } },
+      },
+    });
+    expect(list).toEqual([
+      {
+        linearIssueId: 'uuid-1',
+        identifier: 'APP-123',
+        title: 'Button reparieren',
+        url: 'https://linear.app/demo/issue/APP-123',
+        teamKey: 'APP',
+        teamName: 'App-Team',
+        priority: 2,
+        priorityLabel: 'High',
+        linearState: 'Todo',
+        linearUpdatedAt: '2026-07-02T10:00:00.000Z',
+      },
+      {
+        linearIssueId: 'uuid-2',
+        identifier: 'WEB-7',
+        title: 'Zweites Ticket',
+        url: 'https://linear.app/demo/issue/APP-123',
+        teamKey: 'WEB',
+        teamName: 'Web-Team',
+        priority: 2,
+        priorityLabel: 'High',
+        linearState: 'In Progress',
+        linearUpdatedAt: '2026-07-02T10:00:00.000Z',
+      },
+    ]);
+  });
+
+  it('begrenzt das Limit auf 100', async () => {
+    const issues = vi.fn(async () => ({ nodes: [] }));
+    const service = new LinearService({ client: { issue: vi.fn(), issues } });
+
+    await service.listAssignedIssues(500);
+
+    expect(issues).toHaveBeenCalledWith(expect.objectContaining({ first: 100 }));
+  });
+
+  it('wirft verständlich ohne API-Key', async () => {
+    const service = new LinearService({});
+    await expect(service.listAssignedIssues()).rejects.toThrow(/LINEAR_API_KEY/);
+  });
+});
+
 describe('LinearService.postComment', () => {
   it('ist standardmäßig deaktiviert und ruft Linear nicht auf', async () => {
     const createComment = vi.fn();

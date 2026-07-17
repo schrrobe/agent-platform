@@ -40,8 +40,22 @@ export interface LinearIssueLike {
   labels?: () => Promise<LinearLabelConnectionLike>;
 }
 
+export interface LinearIssueConnectionLike {
+  nodes: LinearIssueLike[];
+  pageInfo?: { hasNextPage: boolean };
+  fetchNext?: () => Promise<LinearIssueConnectionLike>;
+}
+
+/** Filter-/Sortieroptionen, wie sie der Linear-Client (bzw. Fake) versteht. */
+export interface LinearIssuesQueryLike {
+  first?: number;
+  filter?: Record<string, unknown>;
+  orderBy?: string;
+}
+
 export interface LinearClientLike {
   issue(id: string): Promise<LinearIssueLike>;
+  issues?(variables?: LinearIssuesQueryLike): Promise<LinearIssueConnectionLike>;
   createComment?(input: { issueId: string; body: string }): Promise<unknown>;
   updateIssue?(id: string, input: { description: string }): Promise<{ success: boolean }>;
 }
@@ -63,10 +77,26 @@ export interface LinearTicketDraft {
   linearUpdatedAt: string | null;
 }
 
+/** Leichtgewichtige Übersicht eines zugewiesenen Tickets (für die Auswahl-Liste). */
+export interface LinearAssignedIssueSummary {
+  linearIssueId: string;
+  identifier: string;
+  title: string;
+  url: string;
+  teamKey: string | null;
+  teamName: string | null;
+  priority: number | null;
+  priorityLabel: string | null;
+  linearState: string | null;
+  linearUpdatedAt: string | null;
+}
+
 export function createLinearClientAdapter(apiKey: string): LinearClientLike {
   const client = new LinearClient({ apiKey });
   return {
     issue: (id: string) => client.issue(id) as unknown as Promise<LinearIssueLike>,
+    issues: (variables) =>
+      client.issues(variables as never) as unknown as Promise<LinearIssueConnectionLike>,
     createComment: (input) => client.createComment(input),
     updateIssue: (id, input) => client.updateIssue(id, input),
   };
@@ -154,6 +184,55 @@ export class LinearService {
       labels,
       linearState: state?.name ?? null,
       linearCreatedAt: issue.createdAt?.toISOString() ?? null,
+      linearUpdatedAt: issue.updatedAt?.toISOString() ?? null,
+    };
+  }
+
+  /**
+   * Lädt offene, dem aktuellen API-Token zugewiesene Tickets als Auswahl-Liste.
+   * Erledigte und abgebrochene Tickets werden ausgeblendet, sortiert nach letzter Änderung.
+   */
+  async listAssignedIssues(limit = 50): Promise<LinearAssignedIssueSummary[]> {
+    const client = this.requireClient();
+    if (!client.issues) {
+      throw new LinearError(
+        'Der konfigurierte Linear-Client unterstützt keine Ticket-Listen.',
+      );
+    }
+    const capped = Math.max(1, Math.min(Math.trunc(limit), 100));
+    let connection: LinearIssueConnectionLike;
+    try {
+      connection = await client.issues({
+        first: capped,
+        orderBy: 'updatedAt',
+        filter: {
+          assignee: { isMe: { eq: true } },
+          state: { type: { nin: ['completed', 'canceled'] } },
+        },
+      });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      throw new LinearError(`Linear-Abfrage der Ticket-Liste fehlgeschlagen: ${message}`, message);
+    }
+    const nodes = connection.nodes.slice(0, capped);
+    return Promise.all(nodes.map((issue) => this.toAssignedSummary(issue)));
+  }
+
+  private async toAssignedSummary(issue: LinearIssueLike): Promise<LinearAssignedIssueSummary> {
+    const [team, state] = await Promise.all([
+      issue.team ?? Promise.resolve(undefined),
+      issue.state ?? Promise.resolve(undefined),
+    ]);
+    return {
+      linearIssueId: issue.id,
+      identifier: issue.identifier,
+      title: issue.title,
+      url: issue.url,
+      teamKey: team?.key ?? null,
+      teamName: team?.name ?? null,
+      priority: issue.priority ?? null,
+      priorityLabel: issue.priorityLabel ?? null,
+      linearState: state?.name ?? null,
       linearUpdatedAt: issue.updatedAt?.toISOString() ?? null,
     };
   }

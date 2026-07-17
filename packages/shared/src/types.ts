@@ -100,6 +100,24 @@ export interface JobSummary extends Job {
   repositoryPath: string;
 }
 
+/** Ein dem Nutzer zugewiesenes Linear-Ticket für die Import-Auswahl. */
+export interface LinearAssignedIssue {
+  linearIssueId: string;
+  identifier: string;
+  title: string;
+  url: string;
+  teamKey: string | null;
+  teamName: string | null;
+  priority: number | null;
+  priorityLabel: string | null;
+  linearState: string | null;
+  linearUpdatedAt: IsoDateTime | null;
+  /** true, wenn bereits ein Ticket mit dieser Linear-ID importiert wurde. */
+  alreadyImported: boolean;
+  /** Projekt-ID des bereits importierten Tickets, sonst null. */
+  existingProjectId: string | null;
+}
+
 export interface TicketImportFailure {
   identifier: string;
   message: string;
