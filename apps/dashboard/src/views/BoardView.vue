@@ -38,7 +38,7 @@ async function move(jobId: string, to: JobState): Promise<void> {
 <template>
   <div class="board-view">
     <div class="toolbar">
-      <button class="primary" @click="showImport = true">+ Ticket importieren</button>
+      <button class="primary" @click="showImport = true">+ Tickets importieren</button>
       <span class="muted">{{ jobs.jobs.length }} Tickets</span>
       <span v-if="jobs.error" class="err">{{ jobs.error }}</span>
       <span v-if="notice" class="err">{{ notice }}</span>
@@ -82,10 +82,13 @@ async function move(jobId: string, to: JobState): Promise<void> {
   inset: 0;
   background: rgba(0, 0, 0, 0.4);
   display: flex;
-  justify-content: flex-end;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
   z-index: 50;
 }
 .drawer {
-  width: min(680px, 100vw);
+  width: min(680px, 100%);
+  max-height: 100%;
 }
 </style>

@@ -3,6 +3,7 @@ import type {
   AgentExecutionInput,
   AgentExecutionResult,
   AgentName,
+  AgentUsage,
   ProcessHandle,
   ProcessResult,
   ProcessRunner,
@@ -39,6 +40,14 @@ export abstract class CliAgentAdapter implements AgentAdapter {
     // Hook für Adapter-Vorbereitung (z. B. Verzeichnisse anlegen).
   }
 
+  /**
+   * Extrahiert Token-Verbrauch aus der Roh-Ausgabe. Standard: keine Daten.
+   * Adapter mit maschinenlesbarer Usage-Ausgabe (Claude JSON) überschreiben dies.
+   */
+  protected extractUsage(_result: ProcessResult, _input: AgentExecutionInput): AgentUsage | null {
+    return null;
+  }
+
   async execute(input: AgentExecutionInput): Promise<AgentExecutionResult> {
     await this.beforeRun(input);
     const handle = this.options.runner.run({
@@ -62,6 +71,7 @@ export abstract class CliAgentAdapter implements AgentAdapter {
             ? 'completed'
             : 'failed';
       const output = await this.extractOutput(result, input);
+      const usage = status === 'completed' ? this.extractUsage(result, input) : null;
       const error =
         status === 'completed'
           ? null
@@ -76,6 +86,7 @@ export abstract class CliAgentAdapter implements AgentAdapter {
         output,
         rawOutput: result.stdout,
         truncated: result.truncated,
+        usage,
         error,
         durationMs: result.durationMs,
       };

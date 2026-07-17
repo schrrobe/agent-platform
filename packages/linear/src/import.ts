@@ -2,8 +2,9 @@ import { LinearClient } from '@linear/sdk';
 import { IDENTIFIER_RE } from '@agent/shared';
 
 /**
- * Linear ist ausschließlich Datenquelle: gelesen werden Ticketdaten, es finden
- * keine Statusänderungen statt. Der Client ist als schmales strukturelles
+ * Linear liefert Ticketdaten und erlaubt die explizite Aktualisierung einer
+ * Beschreibung sowie optionale Kommentare. Statusänderungen finden nie statt.
+ * Der Client ist als schmales strukturelles
  * Interface abstrahiert, damit Tests ohne SDK-Mocks auskommen und SDK-Major-
  * Bumps (Linear released aggressiv) nur diese Datei betreffen.
  */
@@ -42,6 +43,7 @@ export interface LinearIssueLike {
 export interface LinearClientLike {
   issue(id: string): Promise<LinearIssueLike>;
   createComment?(input: { issueId: string; body: string }): Promise<unknown>;
+  updateIssue?(id: string, input: { description: string }): Promise<{ success: boolean }>;
 }
 
 /** Ticketdaten, wie sie lokal gespeichert werden (ohne Projektzuordnung). */
@@ -66,6 +68,7 @@ export function createLinearClientAdapter(apiKey: string): LinearClientLike {
   return {
     issue: (id: string) => client.issue(id) as unknown as Promise<LinearIssueLike>,
     createComment: (input) => client.createComment(input),
+    updateIssue: (id, input) => client.updateIssue(id, input),
   };
 }
 
@@ -153,6 +156,28 @@ export class LinearService {
       linearCreatedAt: issue.createdAt?.toISOString() ?? null,
       linearUpdatedAt: issue.updatedAt?.toISOString() ?? null,
     };
+  }
+
+  /** Aktualisiert ausschließlich die Beschreibung eines bestehenden Linear-Tickets. */
+  async updateDescription(linearIssueId: string, description: string): Promise<void> {
+    const client = this.requireClient();
+    if (!client.updateIssue) {
+      throw new LinearError(
+        'Der konfigurierte Linear-Client unterstützt keine Ticket-Aktualisierungen.',
+      );
+    }
+    try {
+      const result = await client.updateIssue(linearIssueId, { description });
+      if (!result.success) {
+        throw new Error('Linear hat die Aktualisierung nicht bestätigt');
+      }
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      throw new LinearError(
+        `Linear-Beschreibung konnte nicht aktualisiert werden: ${message}`,
+        message,
+      );
+    }
   }
 
   /**

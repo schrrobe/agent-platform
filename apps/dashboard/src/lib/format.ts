@@ -28,6 +28,28 @@ export function formatDateTime(iso: string | null): string {
   return date.toLocaleString('de-DE', { dateStyle: 'short', timeStyle: 'medium' });
 }
 
+/** Kompakte Token-/Zahlformatierung, z. B. 1_234_567 → "1.23M", 12_500 → "12.5k". */
+export function formatCompact(value: number): string {
+  if (!Number.isFinite(value)) return '0';
+  const abs = Math.abs(value);
+  if (abs < 1000) return String(Math.round(value));
+  if (abs < 1_000_000) return `${(value / 1000).toFixed(abs < 10_000 ? 1 : 0)}k`;
+  if (abs < 1_000_000_000) return `${(value / 1_000_000).toFixed(2)}M`;
+  return `${(value / 1_000_000_000).toFixed(2)}B`;
+}
+
+/** Volle Tausendertrennung, z. B. 1234567 → "1.234.567". */
+export function formatInteger(value: number): string {
+  return Math.round(value).toLocaleString('de-DE');
+}
+
+/** USD-Kosten, z. B. 0.1234 → "$0.1234", 12.5 → "$12.50". */
+export function formatCost(value: number): string {
+  if (value <= 0) return '$0';
+  const digits = value < 1 ? 4 : 2;
+  return `$${value.toFixed(digits)}`;
+}
+
 export function relativeTime(iso: string | null, now: number = Date.now()): string {
   if (!iso) return '—';
   const diff = now - new Date(iso).getTime();

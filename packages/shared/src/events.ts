@@ -19,6 +19,7 @@ export const WS_EVENT_TYPES = [
   'job.completed',
   'job.failed',
   'job.paused',
+  'job.deleted',
   'agent.started',
   'agent.output',
   'agent.completed',
@@ -44,6 +45,7 @@ export interface WsPayloads {
   'job.completed': { job: JobSummary };
   'job.failed': { job: JobSummary; error: string };
   'job.paused': { job: JobSummary };
+  'job.deleted': { jobId: string };
   'agent.started': { runId: string; agent: AgentName; phase: AgentPhase };
   'agent.output': { runId: string; stream: 'stdout' | 'stderr'; text: string };
   'agent.completed': { runId: string; status: RunStatus; exitCode: number | null };

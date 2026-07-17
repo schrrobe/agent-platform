@@ -66,7 +66,7 @@ export function createContext(
   const githubEnv = buildGithubEnv(process.env);
 
   const executor = new ProcessExecutor();
-  const git = new GitService({ runner: executor, env: gitEnv });
+  const git = new GitService({ runner: executor, env: gitEnv, identity: config.gitIdentity });
   const testSandbox = new TestSandbox({
     runner: executor,
     dataDir: config.dataDir,
@@ -111,7 +111,17 @@ export function createContext(
   });
   const queue = new JobQueue({ pipeline, config, logger, repos });
   const mutex = new KeyedMutex();
-  const jobs = new JobService({ config, repos, publisher, queue, linear, logStore, mutex });
+  const jobs = new JobService({
+    config,
+    repos,
+    publisher,
+    queue,
+    linear,
+    logStore,
+    mutex,
+    git,
+    testSandbox,
+  });
   const github = new GithubCliClient(executor, githubEnv);
   const githubReviews = new GithubReviewService({
     config,

@@ -1,9 +1,12 @@
 import type { FastifyInstance } from 'fastify';
 import {
+  bulkImportRequestSchema,
   importRequestSchema,
+  jobCleanupSchema,
   logsQuerySchema,
   planApprovalSchema,
   statePatchSchema,
+  ticketDescriptionUpdateSchema,
 } from '@agent/shared';
 import type { AppContext } from '../../context.js';
 import { ApiError, parseBody } from '../errors.js';
@@ -23,6 +26,19 @@ export function registerJobRoutes(app: FastifyInstance, ctx: AppContext): void {
     return { job };
   });
 
+  app.post('/api/jobs/import-bulk', async (request, reply) => {
+    const input = parseBody(bulkImportRequestSchema, request.body);
+    const result = await ctx.jobs.importTickets(input.identifiers, input.projectId);
+    reply.code(201);
+    return { result };
+  });
+
+  app.patch('/api/jobs/:id/ticket-description', async (request) => {
+    const { id } = request.params as { id: string };
+    const input = parseBody(ticketDescriptionUpdateSchema, request.body);
+    return { job: await ctx.jobs.updateTicketDescription(id, input.description) };
+  });
+
   app.post('/api/jobs/:id/start', async (request) => {
     const { id } = request.params as { id: string };
     return { job: await ctx.jobs.start(id) };
@@ -36,6 +52,20 @@ export function registerJobRoutes(app: FastifyInstance, ctx: AppContext): void {
   app.post('/api/jobs/:id/retry', async (request) => {
     const { id } = request.params as { id: string };
     return { job: await ctx.jobs.retry(id) };
+  });
+
+  app.post('/api/jobs/:id/reset', async (request) => {
+    const { id } = request.params as { id: string };
+    const input = parseBody(jobCleanupSchema, request.body ?? {});
+    return { job: await ctx.jobs.resetToInbox(id, input) };
+  });
+
+  app.delete('/api/jobs/:id', async (request, reply) => {
+    const { id } = request.params as { id: string };
+    const input = parseBody(jobCleanupSchema, request.body ?? {});
+    await ctx.jobs.delete(id, input);
+    reply.code(204);
+    return null;
   });
 
   app.post('/api/jobs/:id/approve-plan', async (request) => {

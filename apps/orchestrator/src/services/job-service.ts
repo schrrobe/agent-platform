@@ -1,6 +1,10 @@
+import fs from 'node:fs/promises';
+import path from 'node:path';
 import {
+  ACTIVE_STATES,
   PAUSABLE_STATES,
   isManualTransitionAllowed,
+  type BulkTicketImportResult,
   type Job,
   type JobDetail,
   type JobState,
@@ -8,6 +12,7 @@ import {
   type PipelinePhase,
 } from '@agent/shared';
 import type { Repositories } from '@agent/database';
+import type { GitService } from '@agent/git';
 import { LinearService } from '@agent/linear';
 import { assertManualTransition, assertTransition } from '@agent/workflow';
 import type { AppConfig } from '../config.js';
@@ -15,6 +20,7 @@ import type { Publisher } from '../events/publisher.js';
 import type { LogStore } from '../services/log-store.js';
 import type { KeyedMutex } from '../services/mutex.js';
 import type { JobQueue } from '../pipeline/queue.js';
+import type { TestSandbox } from './test-sandbox.js';
 
 export class JobServiceError extends Error {
   constructor(
@@ -34,6 +40,12 @@ interface JobServiceDeps {
   linear: LinearService;
   logStore: LogStore;
   mutex: KeyedMutex;
+  git: GitService;
+  testSandbox: TestSandbox;
+}
+
+export interface JobCleanupOptions {
+  removeWorktree: boolean;
 }
 
 /**
@@ -91,6 +103,63 @@ export class JobService {
       });
       const summary = this.getSummary(job.id);
       this.deps.publisher.emit('job.created', job.id, { job: summary });
+      return summary;
+    });
+  }
+
+  async importTickets(
+    identifiers: readonly string[],
+    projectId: string,
+  ): Promise<BulkTicketImportResult> {
+    if (!this.deps.repos.projects.get(projectId)) {
+      throw new JobServiceError('NOT_FOUND', `Projekt nicht gefunden: ${projectId}`);
+    }
+    const unique = [...new Map(identifiers.map((id) => [id.toLowerCase(), id])).values()];
+    const result: BulkTicketImportResult = { jobs: [], failures: [] };
+    for (const identifier of unique) {
+      try {
+        result.jobs.push(await this.importTicket(identifier, projectId));
+      } catch (error) {
+        result.failures.push({
+          identifier,
+          message: error instanceof Error ? error.message : String(error),
+        });
+      }
+    }
+    return result;
+  }
+
+  async updateTicketDescription(jobId: string, description: string): Promise<JobSummary> {
+    return this.withJob(jobId, async (job) => {
+      if (
+        job.state === 'agent_ready' ||
+        ACTIVE_STATES.includes(job.state) ||
+        job.currentAgent != null ||
+        job.activePgid != null
+      ) {
+        throw new JobServiceError(
+          'CONFLICT',
+          'Die Beschreibung kann während eines aktiven Agentenlaufs nicht geändert werden.',
+        );
+      }
+      const ticket = this.deps.repos.tickets.get(job.ticketId);
+      if (!ticket) {
+        throw new JobServiceError('NOT_FOUND', `Ticket nicht gefunden: ${job.ticketId}`);
+      }
+      try {
+        await this.deps.linear.updateDescription(ticket.linearIssueId, description);
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        throw new JobServiceError('LINEAR_ERROR', message);
+      }
+      this.deps.repos.tickets.updateDescription(ticket.id, description);
+      const summary = this.getSummary(job.id);
+      this.deps.publisher.record({
+        type: 'job.updated',
+        jobId: job.id,
+        payload: { job: summary },
+        message: `Beschreibung von ${ticket.identifier} in Linear aktualisiert`,
+      });
       return summary;
     });
   }
@@ -283,6 +352,97 @@ export class JobService {
         payload: { job: summary, error: 'Vom Benutzer abgebrochen' },
       });
       return summary;
+    });
+  }
+
+  private assertIdleForDestructiveAction(job: Job): void {
+    if (this.deps.queue.isQueued(job.id) || job.currentAgent || job.activePgid != null) {
+      throw new JobServiceError(
+        'CONFLICT',
+        'Laufender oder wartender Job kann nicht zurückgesetzt oder gelöscht werden',
+      );
+    }
+  }
+
+  private worktreeOwner(job: Job): {
+    jobId: string;
+    branch: string;
+    repositoryPath: string;
+    baseCommit: string;
+  } | null {
+    if (!job.worktreePath) return null;
+    const project = this.deps.repos.projects.get(job.projectId);
+    if (!project || !job.branch || !job.baseCommitSha) {
+      throw new JobServiceError(
+        'CONFLICT',
+        'Worktree-Metadaten sind unvollständig; keine automatische Bereinigung möglich',
+      );
+    }
+    return {
+      jobId: job.id,
+      branch: job.branch,
+      repositoryPath: project.repositoryPath,
+      baseCommit: job.baseCommitSha,
+    };
+  }
+
+  private async cleanupRuntimeFiles(jobId: string): Promise<void> {
+    const runFiles = this.deps.repos.agentRuns.listByJob(jobId).map((run) =>
+      fs.rm(path.join(this.deps.config.dataDir, 'codex-runs', `${run.id}.last-message.txt`), {
+        force: true,
+      }),
+    );
+    await Promise.all([this.deps.testSandbox.cleanup(jobId), ...runFiles]);
+  }
+
+  async resetToInbox(jobId: string, options: JobCleanupOptions): Promise<JobSummary> {
+    return this.withJob(jobId, async (job) => {
+      this.assertIdleForDestructiveAction(job);
+      const owner = this.worktreeOwner(job);
+      if (job.worktreePath && owner) {
+        if (options.removeWorktree) {
+          await this.deps.git.removeOwnedWorktree(owner.repositoryPath, job.worktreePath, owner);
+        } else {
+          this.deps.git.clearOwnedAgentArtifacts(job.worktreePath, owner);
+        }
+      }
+
+      await this.cleanupRuntimeFiles(jobId);
+      this.deps.repos.jobs.resetToInbox(jobId, {
+        clearGitMetadata: options.removeWorktree,
+      });
+      this.deps.logStore.clear(jobId);
+      const summary = this.getSummary(jobId);
+      this.deps.logStore.append(jobId, {
+        ts: new Date().toISOString(),
+        source: 'system',
+        stream: 'info',
+        text: 'Job vollständig auf Inbox zurückgesetzt',
+      });
+      this.deps.publisher.record({
+        type: 'job.state_changed',
+        jobId,
+        payload: { job: summary, fromState: job.state, toState: 'inbox' },
+        fromState: job.state,
+        toState: 'inbox',
+        message: 'Job vollständig auf Inbox zurückgesetzt',
+      });
+      this.deps.publisher.emit('job.updated', jobId, { job: summary });
+      return summary;
+    });
+  }
+
+  async delete(jobId: string, options: JobCleanupOptions): Promise<void> {
+    return this.withJob(jobId, async (job) => {
+      this.assertIdleForDestructiveAction(job);
+      const owner = this.worktreeOwner(job);
+      if (options.removeWorktree && job.worktreePath && owner) {
+        await this.deps.git.removeOwnedWorktree(owner.repositoryPath, job.worktreePath, owner);
+      }
+      await this.cleanupRuntimeFiles(jobId);
+      this.deps.repos.jobs.deleteWithRelations(jobId);
+      this.deps.logStore.clear(jobId);
+      this.deps.publisher.emit('job.deleted', jobId, { jobId });
     });
   }
 

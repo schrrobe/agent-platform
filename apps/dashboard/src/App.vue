@@ -24,6 +24,7 @@ onUnmounted(() => ws.disconnect());
       <nav>
         <RouterLink to="/">Board</RouterLink>
         <RouterLink to="/projects">Projekte</RouterLink>
+        <RouterLink to="/stats">Statistik</RouterLink>
         <RouterLink to="/logs">Logs</RouterLink>
         <RouterLink to="/settings">Einstellungen</RouterLink>
       </nav>

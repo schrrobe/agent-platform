@@ -1,7 +1,14 @@
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import type { ProcessResult, ProcessRunner } from '@agent/shared';
-import { branchForJob, isSameOrInside, worktreePathForJob, type BranchKind } from './paths.js';
+import {
+  branchForTicket,
+  isSameOrInside,
+  jobSuffix,
+  worktreePathForJob,
+  type BranchKind,
+} from './paths.js';
 
 /**
  * Sichere Git-Fassade. Bewusst NICHT vorhanden: push, merge, force-push,
@@ -49,6 +56,8 @@ export interface EnsureWorktreeInput {
   repositoryPath: string;
   worktreeRoot: string;
   identifier: string;
+  /** Neue Aufrufer setzen den Titel; ohne ihn bleibt das alte Hash-Schema kompatibel. */
+  title?: string;
   branchKind?: BranchKind;
   /** Bereits persistierter Branch; hält begonnene Jobs über Namensänderungen hinweg fortsetzbar. */
   expectedBranch?: string | null;
@@ -67,6 +76,13 @@ export interface EnsureWorktreeResult {
 export interface WorktreeEntry {
   path: string;
   branch: string | null;
+}
+
+export interface WorktreeOwner {
+  jobId: string;
+  branch: string;
+  repositoryPath: string;
+  baseCommit: string;
 }
 
 export interface ChangedFile {
@@ -180,10 +196,10 @@ export class GitService {
   async allocateBranch(
     repositoryPath: string,
     identifier: string,
-    jobId: string,
+    title: string,
     kind: BranchKind,
   ): Promise<string> {
-    const base = branchForJob(identifier, jobId, kind);
+    const base = branchForTicket(identifier, title, kind);
     for (let attempt = 0; attempt < 100; attempt += 1) {
       const candidate = attempt === 0 ? base : `${base}-${attempt + 1}`;
       if (!(await this.branchExists(repositoryPath, candidate))) return candidate;
@@ -284,7 +300,8 @@ export class GitService {
   async ensureWorktree(input: EnsureWorktreeInput): Promise<EnsureWorktreeResult> {
     const repositoryPath = path.resolve(input.repositoryPath);
     const branch =
-      input.expectedBranch ?? branchForJob(input.identifier, input.jobId, input.branchKind);
+      input.expectedBranch ??
+      branchForTicket(input.identifier, input.title ?? jobSuffix(input.jobId), input.branchKind);
     const worktreePath = worktreePathForJob(input.worktreeRoot, input.identifier, input.jobId);
 
     const canonicalRepositoryPath = canonicalPath(repositoryPath);
@@ -418,10 +435,7 @@ export class GitService {
     );
   }
 
-  verifyOwner(
-    worktreePath: string,
-    expected: { jobId: string; branch: string; repositoryPath: string; baseCommit: string },
-  ): void {
+  verifyOwner(worktreePath: string, expected: WorktreeOwner): void {
     const ownerPath = path.join(worktreePath, AGENT_DIR, OWNER_FILE);
     let owner: Record<string, unknown>;
     try {
@@ -442,6 +456,45 @@ export class GitService {
       throw new GitConflictError(
         `Worktree ${worktreePath} gehört nicht zum erwarteten Job ${expected.jobId}`,
       );
+    }
+  }
+
+  /** Entfernt nur generierte Plan-/Review-Dateien eines verifizierten Job-Worktrees. */
+  clearOwnedAgentArtifacts(worktreePath: string, expected: WorktreeOwner): void {
+    this.verifyOwner(worktreePath, expected);
+    for (const file of ['PLAN.md', 'REVIEW.md']) {
+      fs.rmSync(path.join(worktreePath, AGENT_DIR, file), { force: true });
+    }
+  }
+
+  /**
+   * Entfernt einen sauberen, eindeutig zugeordneten Worktree über Git. Der Branch bleibt bestehen.
+   * `.agent/` wird temporär gesichert, damit `git worktree remove` ohne `--force` arbeiten kann.
+   */
+  async removeOwnedWorktree(
+    repositoryPath: string,
+    worktreePath: string,
+    expected: WorktreeOwner,
+  ): Promise<void> {
+    this.verifyOwner(worktreePath, expected);
+    await this.assertWorktreeClean(worktreePath);
+
+    const agentDir = path.join(worktreePath, AGENT_DIR);
+    const backupRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'agent-worktree-remove-'));
+    const backupAgentDir = path.join(backupRoot, AGENT_DIR);
+    try {
+      fs.cpSync(agentDir, backupAgentDir, { recursive: true });
+      fs.rmSync(agentDir, { recursive: true });
+      try {
+        await this.git(repositoryPath, ['worktree', 'remove', worktreePath]);
+      } catch (error) {
+        if (fs.existsSync(worktreePath) && !fs.existsSync(agentDir)) {
+          fs.cpSync(backupAgentDir, agentDir, { recursive: true });
+        }
+        throw error;
+      }
+    } finally {
+      fs.rmSync(backupRoot, { recursive: true, force: true });
     }
   }
 

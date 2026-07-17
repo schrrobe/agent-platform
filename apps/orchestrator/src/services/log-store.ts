@@ -60,4 +60,10 @@ export class LogStore {
     const limit = opts.limit ?? 1000;
     return lines.slice(-limit);
   }
+
+  /** Entfernt die persistierte Logdatei eines Jobs und startet dessen Sequenz neu. */
+  clear(jobId: string): void {
+    fs.rmSync(this.fileFor(jobId), { force: true });
+    this.seqByJob.delete(jobId);
+  }
 }

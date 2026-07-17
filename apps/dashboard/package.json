@@ -16,6 +16,7 @@
   "dependencies": {
     "@agent/shared": "workspace:*",
     "@atlaskit/pragmatic-drag-and-drop": "catalog:",
+    "d3": "^7.9.0",
     "dompurify": "catalog:",
     "marked": "catalog:",
     "pinia": "catalog:",
@@ -23,6 +24,7 @@
     "vue-router": "catalog:"
   },
   "devDependencies": {
+    "@types/d3": "^7.4.3",
     "@vitejs/plugin-vue": "catalog:",
     "@vue/test-utils": "catalog:",
     "happy-dom": "catalog:",

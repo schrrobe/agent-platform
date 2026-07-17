@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue';
+import { useRouter } from 'vue-router';
 import type { ArtifactType, JobState } from '@agent/shared';
 import { ACTIVE_STATES, PAUSABLE_STATES } from '@agent/shared';
 import { useJobDetailStore } from '@/stores/jobDetail';
@@ -15,8 +16,9 @@ import GitDiffViewer from './GitDiffViewer.vue';
 import TestRunPanel from './TestRunPanel.vue';
 import ConfirmDialog from './ConfirmDialog.vue';
 
-defineProps<{ mode: 'drawer' | 'page' }>();
+const props = defineProps<{ mode: 'drawer' | 'page' }>();
 const emit = defineEmits<{ close: [] }>();
+const router = useRouter();
 
 const store = useJobDetailStore();
 const jobs = useJobsStore();
@@ -43,9 +45,14 @@ const tab = ref<Tab>('Beschreibung');
 const detail = computed(() => store.detail);
 const busy = ref(false);
 const confirmCancel = ref(false);
+const confirmReset = ref(false);
+const confirmDelete = ref(false);
+const removeWorktree = ref(false);
 const approvalNote = ref('');
 const actionMessage = ref<string | null>(null);
 const actionError = ref<string | null>(null);
+const editingDescription = ref(false);
+const descriptionDraft = ref('');
 
 function artifact(type: ArtifactType): string | null {
   const list = detail.value?.artifacts.filter((a) => a.type === type) ?? [];
@@ -85,13 +92,59 @@ const cancelIsPostRun = computed(() =>
 const isActive = computed(() =>
   detail.value ? ACTIVE_STATES.includes(detail.value.state) : false,
 );
+const canManageJob = computed(() =>
+  detail.value
+    ? detail.value.currentAgent == null &&
+      detail.value.activePgid == null &&
+      detail.value.state !== 'agent_ready' &&
+      !ACTIVE_STATES.includes(detail.value.state)
+    : false,
+);
+const descriptionChanged = computed(
+  () => detail.value != null && descriptionDraft.value !== detail.value.ticket.description,
+);
+
+function editDescription(): void {
+  if (!detail.value || !canManageJob.value) return;
+  descriptionDraft.value = detail.value.ticket.description;
+  editingDescription.value = true;
+  actionMessage.value = null;
+  actionError.value = null;
+}
+
+function cancelDescriptionEdit(): void {
+  editingDescription.value = false;
+  descriptionDraft.value = detail.value?.ticket.description ?? '';
+}
+
+async function saveDescription(): Promise<void> {
+  if (!detail.value || !descriptionChanged.value) return;
+  busy.value = true;
+  actionMessage.value = null;
+  actionError.value = null;
+  try {
+    const job = await api.updateTicketDescription(detail.value.id, descriptionDraft.value);
+    jobs.upsert(job);
+    await store.refresh();
+    editingDescription.value = false;
+    actionMessage.value = 'Beschreibung wurde lokal und in Linear aktualisiert.';
+  } catch (error) {
+    actionError.value = (error as Error).message;
+  } finally {
+    busy.value = false;
+  }
+}
 
 async function act(fn: () => Promise<{ id: string; state: JobState }>): Promise<void> {
   busy.value = true;
+  actionMessage.value = null;
+  actionError.value = null;
   try {
     const job = await fn();
     jobs.upsert(job as never);
     await store.refresh();
+  } catch (error) {
+    actionError.value = (error as Error).message;
   } finally {
     busy.value = false;
   }
@@ -132,6 +185,50 @@ function doCancel(): void {
   confirmCancel.value = false;
   void act(() => api.cancelJob(detail.value!.id));
 }
+
+function openReset(): void {
+  removeWorktree.value = false;
+  confirmReset.value = true;
+}
+
+function openDelete(): void {
+  removeWorktree.value = false;
+  confirmDelete.value = true;
+}
+
+async function resetJob(): Promise<void> {
+  confirmReset.value = false;
+  busy.value = true;
+  actionError.value = null;
+  try {
+    const job = await api.resetJob(detail.value!.id, removeWorktree.value);
+    jobs.upsert(job);
+    await store.open(job.id);
+    actionMessage.value = 'Job wurde vollständig auf Inbox zurückgesetzt.';
+  } catch (error) {
+    actionError.value = (error as Error).message;
+  } finally {
+    busy.value = false;
+  }
+}
+
+async function deleteJob(): Promise<void> {
+  confirmDelete.value = false;
+  busy.value = true;
+  actionError.value = null;
+  const jobId = detail.value!.id;
+  try {
+    await api.deleteJob(jobId, removeWorktree.value);
+    jobs.remove(jobId);
+    store.close();
+    if (props.mode === 'page') await router.push('/');
+    else emit('close');
+  } catch (error) {
+    actionError.value = (error as Error).message;
+  } finally {
+    busy.value = false;
+  }
+}
 </script>
 
 <template>
@@ -168,6 +265,12 @@ function doCancel(): void {
         <button v-if="canCancel" class="danger" :disabled="busy" @click="confirmCancel = true">
           {{ isActive ? '⏹ Abbrechen' : '✕ Verwerfen' }}
         </button>
+        <button v-if="canManageJob" :disabled="busy" @click="openReset">
+          ↺ Auf Inbox zurücksetzen
+        </button>
+        <button v-if="canManageJob" class="danger" :disabled="busy" @click="openDelete">
+          🗑 Ticket löschen
+        </button>
         <a class="linear-link" :href="detail.ticket.url" target="_blank" rel="noreferrer"
           >Linear ↗</a
         >
@@ -194,12 +297,46 @@ function doCancel(): void {
       </nav>
 
       <div class="tab-content">
-        <ArtifactViewer
-          v-if="tab === 'Beschreibung'"
-          :content="detail.ticket.description"
-          markdown
-          empty="Keine Beschreibung."
-        />
+        <div v-if="tab === 'Beschreibung'" class="description-tab">
+          <template v-if="editingDescription">
+            <label for="ticket-description">Ticketbeschreibung (Markdown)</label>
+            <textarea
+              id="ticket-description"
+              v-model="descriptionDraft"
+              rows="18"
+              maxlength="100000"
+              :disabled="busy"
+            />
+            <div class="description-actions">
+              <span class="muted">
+                Beim Speichern wird die Beschreibung direkt in Linear geändert.
+              </span>
+              <button :disabled="busy" @click="cancelDescriptionEdit">Abbrechen</button>
+              <button
+                class="primary"
+                :disabled="busy || !descriptionChanged"
+                @click="saveDescription"
+              >
+                {{ busy ? 'Speichere…' : 'In Linear speichern' }}
+              </button>
+            </div>
+          </template>
+          <template v-else>
+            <div class="description-toolbar">
+              <span v-if="!canManageJob" class="faint">
+                Während eines aktiven Laufs ist die Bearbeitung gesperrt.
+              </span>
+              <button :disabled="!canManageJob || busy" @click="editDescription">
+                Beschreibung bearbeiten
+              </button>
+            </div>
+            <ArtifactViewer
+              :content="detail.ticket.description"
+              markdown
+              empty="Keine Beschreibung."
+            />
+          </template>
+        </div>
         <WorkflowTimeline v-else-if="tab === 'Verlauf'" :events="detail.events" />
         <LiveLogViewer v-else-if="tab === 'Live-Logs'" :logs="store.logs" />
         <ArtifactViewer
@@ -290,6 +427,30 @@ function doCancel(): void {
       @confirm="doCancel"
       @cancel="confirmCancel = false"
     />
+    <ConfirmDialog
+      :open="confirmReset"
+      title="Job auf Inbox zurücksetzen?"
+      message="Logs, Ereignisse, Agentenläufe, Artefakte, Reviews und Testergebnisse dieses Jobs werden dauerhaft gelöscht. Ohne Worktree-Entfernung bleiben Branch und vorhandene Commits erhalten."
+      confirm-label="Zurücksetzen"
+      checkbox-label="Zugehörigen Worktree sicher entfernen und beim nächsten Lauf einen neuen Branch verwenden"
+      :checked="removeWorktree"
+      danger
+      @update:checked="removeWorktree = $event"
+      @confirm="resetJob"
+      @cancel="confirmReset = false"
+    />
+    <ConfirmDialog
+      :open="confirmDelete"
+      title="Ticket vom Board löschen?"
+      message="Der lokale Job und seine gesamte Laufhistorie werden dauerhaft gelöscht. Linear bleibt unverändert. Ohne Worktree-Entfernung bleiben Worktree und Branch zur manuellen Sicherung bestehen."
+      confirm-label="Ticket löschen"
+      checkbox-label="Zugehörigen Worktree sicher entfernen; Branch als Wiederherstellungspunkt behalten"
+      :checked="removeWorktree"
+      danger
+      @update:checked="removeWorktree = $event"
+      @confirm="deleteJob"
+      @cancel="confirmDelete = false"
+    />
   </div>
 </template>
 
@@ -302,8 +463,10 @@ function doCancel(): void {
   background: var(--bg-elev);
 }
 .drawer.drawer {
-  border-left: 1px solid var(--border);
+  border: 1px solid var(--border);
+  border-radius: 12px;
   box-shadow: var(--shadow);
+  overflow: hidden;
 }
 .head {
   display: flex;
@@ -390,6 +553,29 @@ function doCancel(): void {
   padding: 14px 18px;
   display: flex;
   flex-direction: column;
+}
+.description-tab {
+  display: flex;
+  flex: 1;
+  min-height: 0;
+  flex-direction: column;
+  gap: 10px;
+}
+.description-toolbar,
+.description-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 10px;
+}
+.description-toolbar .faint,
+.description-actions .muted {
+  margin-right: auto;
+  font-size: 12px;
+}
+.description-tab textarea {
+  flex: 1;
+  min-height: 220px;
 }
 .pad {
   overflow-y: auto;

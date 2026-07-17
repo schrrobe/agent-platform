@@ -90,7 +90,7 @@ function baseResponder(overrides: Responder = () => undefined): Responder {
 
 describe('allocateBranch', () => {
   it('weicht bei einer vorhandenen menschlichen Branch-Kollision stabil aus', async () => {
-    const base = `feature/app-123/${JOB_SUFFIX}`;
+    const base = 'feature/app-123/login-reparieren';
     const { git } = service(
       baseResponder((spec) => {
         if (hasArgs(spec, 'show-ref', `refs/heads/${base}`)) return { exitCode: 0 };
@@ -98,9 +98,9 @@ describe('allocateBranch', () => {
       }),
     );
 
-    await expect(git.allocateBranch(repoDir, 'APP-123', JOB_ID, 'feature')).resolves.toBe(
-      `${base}-2`,
-    );
+    await expect(
+      git.allocateBranch(repoDir, 'APP-123', 'Login reparieren', 'feature'),
+    ).resolves.toBe(`${base}-2`);
   });
 });
 
@@ -423,6 +423,62 @@ describe('assertWorktreeClean', () => {
       spec.args.includes('status') ? { stdout: ' M src/app.ts\n' } : undefined,
     );
     await expect(git.assertWorktreeClean(repoDir)).rejects.toThrow(/lokale Änderungen/);
+  });
+});
+
+describe('kontrollierte Worktree-Bereinigung', () => {
+  function ownedWorktree(): {
+    worktreePath: string;
+    owner: Parameters<GitService['verifyOwner']>[1];
+  } {
+    const worktreePath = path.join(worktreeRoot, 'app-123-owned');
+    const owner = {
+      jobId: JOB_ID,
+      branch: `feature/app-123/${JOB_SUFFIX}`,
+      repositoryPath: repoDir,
+      baseCommit: 'base123',
+    };
+    fs.mkdirSync(path.join(worktreePath, '.agent'), { recursive: true });
+    fs.writeFileSync(path.join(worktreePath, '.agent', 'OWNER.json'), JSON.stringify(owner));
+    fs.writeFileSync(path.join(worktreePath, '.agent', 'PLAN.md'), '# Plan');
+    fs.writeFileSync(path.join(worktreePath, '.agent', 'REVIEW.md'), '# Review');
+    return { worktreePath, owner };
+  }
+
+  it('entfernt nur Plan und Review bei beibehaltenem Worktree', () => {
+    const { worktreePath, owner } = ownedWorktree();
+    const { git } = service(() => undefined);
+    git.clearOwnedAgentArtifacts(worktreePath, owner);
+    expect(fs.existsSync(path.join(worktreePath, '.agent', 'OWNER.json'))).toBe(true);
+    expect(fs.existsSync(path.join(worktreePath, '.agent', 'PLAN.md'))).toBe(false);
+    expect(fs.existsSync(path.join(worktreePath, '.agent', 'REVIEW.md'))).toBe(false);
+  });
+
+  it('entfernt einen sauberen eigenen Worktree ohne Force und behält den Branch', async () => {
+    const { worktreePath, owner } = ownedWorktree();
+    const { git, runner } = service((spec) => {
+      if (hasArgs(spec, 'worktree', 'remove')) {
+        fs.rmSync(worktreePath, { recursive: true });
+      }
+      return undefined;
+    });
+    await git.removeOwnedWorktree(repoDir, worktreePath, owner);
+    const remove = runner.argsOfCall((spec) => hasArgs(spec, 'worktree', 'remove'));
+    expect(remove?.args).toEqual(['worktree', 'remove', worktreePath]);
+    expect(remove?.args).not.toContain('--force');
+    expect(fs.existsSync(worktreePath)).toBe(false);
+  });
+
+  it('verweigert die Entfernung eines schmutzigen Worktrees', async () => {
+    const { worktreePath, owner } = ownedWorktree();
+    const { git, runner } = service((spec) =>
+      spec.args.includes('status') ? { stdout: ' M src/app.ts\n' } : undefined,
+    );
+    await expect(git.removeOwnedWorktree(repoDir, worktreePath, owner)).rejects.toThrow(
+      /lokale Änderungen/,
+    );
+    expect(runner.argsOfCall((spec) => hasArgs(spec, 'worktree', 'remove'))).toBeUndefined();
+    expect(fs.existsSync(path.join(worktreePath, '.agent', 'OWNER.json'))).toBe(true);
   });
 });
 

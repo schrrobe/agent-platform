@@ -128,3 +128,23 @@ describe('LinearService.postComment', () => {
     expect(createComment).toHaveBeenCalledWith({ issueId: 'uuid-1', body: 'Hallo' });
   });
 });
+
+describe('LinearService.updateDescription', () => {
+  it('aktualisiert ausschließlich die Beschreibung des angegebenen Tickets', async () => {
+    const updateIssue = vi.fn(async () => ({ success: true }));
+    const service = new LinearService({ client: { issue: vi.fn(), updateIssue } });
+
+    await service.updateDescription('uuid-1', 'Neue **Beschreibung**');
+
+    expect(updateIssue).toHaveBeenCalledWith('uuid-1', {
+      description: 'Neue **Beschreibung**',
+    });
+  });
+
+  it('übersetzt eine nicht bestätigte Mutation in einen LinearError', async () => {
+    const service = new LinearService({
+      client: { issue: vi.fn(), updateIssue: vi.fn(async () => ({ success: false })) },
+    });
+    await expect(service.updateDescription('uuid-1', 'Neu')).rejects.toThrow(LinearError);
+  });
+});

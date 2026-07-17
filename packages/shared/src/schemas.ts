@@ -99,6 +99,19 @@ export const importRequestSchema = z
   })
   .strict();
 
+export const bulkImportRequestSchema = z
+  .object({
+    identifiers: z.array(identifierSchema).min(1).max(100),
+    projectId: z.uuid(),
+  })
+  .strict();
+
+export const ticketDescriptionUpdateSchema = z
+  .object({
+    description: z.string().max(100_000),
+  })
+  .strict();
+
 export const statePatchSchema = z
   .object({
     state: z.enum(JOB_STATES),
@@ -111,6 +124,12 @@ export const planApprovalSchema = z
   })
   .strict();
 
+export const jobCleanupSchema = z
+  .object({
+    removeWorktree: z.boolean().default(false),
+  })
+  .strict();
+
 export const logsQuerySchema = z.object({
   limit: z.coerce.number().int().min(1).max(5000).default(500),
   afterSeq: z.coerce.number().int().min(0).optional(),
@@ -119,5 +138,8 @@ export const logsQuerySchema = z.object({
 export type ProjectCreateInput = z.infer<typeof projectCreateSchema>;
 export type ProjectUpdateInput = z.infer<typeof projectUpdateSchema>;
 export type ImportRequestInput = z.infer<typeof importRequestSchema>;
+export type BulkImportRequestInput = z.infer<typeof bulkImportRequestSchema>;
+export type TicketDescriptionUpdateInput = z.infer<typeof ticketDescriptionUpdateSchema>;
 export type StatePatchInput = z.infer<typeof statePatchSchema>;
 export type PlanApprovalInput = z.infer<typeof planApprovalSchema>;
+export type JobCleanupInput = z.infer<typeof jobCleanupSchema>;

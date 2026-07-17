@@ -6,12 +6,17 @@ import fastifyStatic from '@fastify/static';
 import type { AppContext } from '../context.js';
 import { registerErrorHandler } from './errors.js';
 import { registerProjectRoutes } from './routes/projects.js';
+import type { ProjectRouteOptions } from './routes/projects.js';
 import { registerJobRoutes } from './routes/jobs.js';
+import { registerStatsRoutes } from './routes/stats.js';
 import { registerWebSocket } from './ws.js';
 
 const DASHBOARD_DIST = fileURLToPath(new URL('../../../dashboard/dist/', import.meta.url));
 
-export async function buildApp(ctx: AppContext): Promise<FastifyInstance> {
+export async function buildApp(
+  ctx: AppContext,
+  options: { projectRoutes?: ProjectRouteOptions } = {},
+): Promise<FastifyInstance> {
   // pino-Logger als Basis-Logger casten: Fastify würde sonst den konkreten
   // pino-Typ inferieren und mit den Plugin-Typen (@fastify/cors, -static, -websocket) kollidieren.
   const app = Fastify({ loggerInstance: ctx.logger as unknown as FastifyBaseLogger });
@@ -29,8 +34,9 @@ export async function buildApp(ctx: AppContext): Promise<FastifyInstance> {
     linearConfigured: Boolean(ctx.config.linear.apiKey),
   }));
 
-  registerProjectRoutes(app, ctx);
+  registerProjectRoutes(app, ctx, options.projectRoutes);
   registerJobRoutes(app, ctx);
+  registerStatsRoutes(app, ctx);
   await registerWebSocket(app, ctx);
 
   // Produktions-Serving des gebauten Dashboards (Single-Prozess-Deploy).

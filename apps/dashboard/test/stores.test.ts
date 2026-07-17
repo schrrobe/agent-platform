@@ -81,6 +81,19 @@ describe('jobs store', () => {
     expect(store.byState.inbox).toHaveLength(0);
   });
 
+  it('entfernt gelöschte Jobs aus WebSocket-Events', () => {
+    const store = useJobsStore();
+    store.upsert(makeJob('1', 'failed', '2026-07-01T00:00:00Z'));
+    store.applyEnvelope({
+      type: 'job.deleted',
+      seq: null,
+      ts: '2026-07-01T00:01:00Z',
+      jobId: '1',
+      payload: { jobId: '1' },
+    });
+    expect(store.jobs).toHaveLength(0);
+  });
+
   it('sortiert Jobs nach Erstellungszeit', () => {
     const store = useJobsStore();
     store.upsert(makeJob('b', 'inbox', '2026-07-05T00:00:00Z'));

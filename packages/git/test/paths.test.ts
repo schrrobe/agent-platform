@@ -2,10 +2,11 @@ import { describe, expect, it } from 'vitest';
 import {
   PathValidationError,
   branchKindForTicket,
-  branchForJob,
   branchForIdentifier,
+  branchForTicket,
   identifierToSlug,
   isPathInside,
+  ticketTitleToSlug,
   worktreePathFor,
   worktreePathForJob,
 } from '../src/paths.js';
@@ -28,9 +29,10 @@ describe('identifierToSlug / branchForIdentifier', () => {
   it('normalisiert gültige Identifier', () => {
     expect(identifierToSlug('APP-123')).toBe('app-123');
     expect(branchForIdentifier('APP-123')).toBe('feature/app-123');
-    expect(branchForJob('APP-123', '11111111-1111-4111-8111-111111111111')).toBe(
-      'feature/app-123/11111111111141118111111111111111',
+    expect(branchForTicket('APP-123', 'Login für größere Kunden', 'fix')).toBe(
+      'fix/app-123/login-fur-grossere-kunden',
     );
+    expect(ticketTitleToSlug('  Größe & Übersicht  ')).toBe('grosse-ubersicht');
   });
 
   it('verwendet konventionelle Kategorien aus Ticket-Metadaten', () => {

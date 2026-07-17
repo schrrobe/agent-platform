@@ -1,10 +1,17 @@
 <script setup lang="ts">
-import { reactive, computed } from 'vue';
+import { reactive, computed, onMounted, ref } from 'vue';
 import type { Project, ProjectCreateInput } from '@agent/shared';
 import { COMMAND_KEYS, SHELL_METACHAR_RE } from '@agent/shared';
+import { ApiClientError, api } from '@/api/client';
 
 const props = defineProps<{ project?: Project }>();
 const emit = defineEmits<{ submit: [input: ProjectCreateInput]; cancel: [] }>();
+const picking = ref<'repository' | 'worktree' | null>(null);
+const pickerError = ref<string | null>(null);
+const repositoryRoot = ref<string | null>(null);
+const repositories = ref<Array<{ name: string; path: string }>>([]);
+const repositoriesLoading = ref(true);
+const repositoriesError = ref<string | null>(null);
 
 const form = reactive({
   name: props.project?.name ?? '',
@@ -38,6 +45,48 @@ const valid = computed(
     form.worktreeRoot.trim() !== '' &&
     commandErrors.value.length === 0,
 );
+
+const selectedRepositoryIsListed = computed(() =>
+  repositories.value.some((repository) => repository.path === form.repositoryPath),
+);
+
+async function loadRepositories(): Promise<void> {
+  repositoriesLoading.value = true;
+  repositoriesError.value = null;
+  try {
+    const result = await api.listRepositories();
+    repositoryRoot.value = result.root;
+    repositories.value = result.repositories;
+  } catch (error) {
+    repositoriesError.value =
+      error instanceof ApiClientError
+        ? error.message
+        : 'Repositories konnten nicht geladen werden.';
+  } finally {
+    repositoriesLoading.value = false;
+  }
+}
+
+onMounted(loadRepositories);
+
+async function chooseDirectory(kind: 'repository' | 'worktree'): Promise<void> {
+  picking.value = kind;
+  pickerError.value = null;
+  try {
+    const result = await api.pickDirectory(kind);
+    if (!result.cancelled && result.path) {
+      if (kind === 'repository') form.repositoryPath = result.path;
+      else form.worktreeRoot = result.path;
+    }
+  } catch (error) {
+    pickerError.value =
+      error instanceof ApiClientError
+        ? error.message
+        : 'Ordnerauswahl konnte nicht geöffnet werden.';
+  } finally {
+    picking.value = null;
+  }
+}
 
 function submit(): void {
   if (!valid.value) return;
@@ -75,7 +124,46 @@ function submit(): void {
     <div class="grid">
       <div class="field">
         <label>Repository-Pfad (absolut)</label>
-        <input v-model="form.repositoryPath" placeholder="/pfad/zum/repo" />
+        <div class="path-control">
+          <select
+            v-if="repositories.length > 0"
+            v-model="form.repositoryPath"
+            :disabled="repositoriesLoading"
+          >
+            <option value="">Repository auswählen</option>
+            <option
+              v-if="form.repositoryPath && !selectedRepositoryIsListed"
+              :value="form.repositoryPath"
+            >
+              {{ form.repositoryPath }}
+            </option>
+            <option
+              v-for="repository in repositories"
+              :key="repository.path"
+              :value="repository.path"
+            >
+              {{ repository.name }}
+            </option>
+          </select>
+          <input
+            v-else
+            v-model="form.repositoryPath"
+            :disabled="repositoriesLoading"
+            :placeholder="repositoriesLoading ? 'Repositories werden geladen …' : '/pfad/zum/repo'"
+          />
+          <button
+            type="button"
+            class="picker-button"
+            :disabled="picking !== null"
+            @click="chooseDirectory('repository')"
+          >
+            {{ picking === 'repository' ? 'Öffne …' : 'Ordner auswählen' }}
+          </button>
+        </div>
+        <span v-if="repositoryRoot && repositories.length" class="field-hint">
+          {{ repositories.length }} Repositories aus {{ repositoryRoot }}
+        </span>
+        <span v-if="repositoriesError" class="warn">{{ repositoriesError }}</span>
       </div>
       <div class="field">
         <label>Basisbranch</label>
@@ -84,8 +172,19 @@ function submit(): void {
     </div>
     <div class="field">
       <label>Worktree-Wurzel (außerhalb des Repos)</label>
-      <input v-model="form.worktreeRoot" placeholder="/pfad/zu/worktrees" />
+      <div class="path-control">
+        <input v-model="form.worktreeRoot" placeholder="/pfad/zu/worktrees" />
+        <button
+          type="button"
+          class="picker-button"
+          :disabled="picking !== null"
+          @click="chooseDirectory('worktree')"
+        >
+          {{ picking === 'worktree' ? 'Öffne …' : 'Ordner auswählen' }}
+        </button>
+      </div>
     </div>
+    <p v-if="pickerError" class="warn">{{ pickerError }}</p>
 
     <fieldset>
       <legend>Autonomie und Sicherheitsgrenzen</legend>
@@ -170,6 +269,19 @@ function submit(): void {
   grid-template-columns: 2fr 1fr;
   gap: 14px;
 }
+.path-control {
+  display: flex;
+  gap: 8px;
+}
+.path-control input,
+.path-control select {
+  min-width: 0;
+  flex: 1;
+}
+.picker-button {
+  flex-shrink: 0;
+  white-space: nowrap;
+}
 .limits {
   margin-top: 12px;
 }
@@ -207,6 +319,10 @@ input.invalid {
 .warn {
   color: var(--c-fail);
   font-size: 12.5px;
+}
+.field-hint {
+  color: var(--text-dim);
+  font-size: 11.5px;
 }
 .actions {
   display: flex;

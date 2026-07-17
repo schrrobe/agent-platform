@@ -1,4 +1,4 @@
-import type { AgentExecutionInput, ProcessResult, ProcessRunner } from '@agent/shared';
+import type { AgentExecutionInput, AgentUsage, ProcessResult, ProcessRunner } from '@agent/shared';
 import { PLAN_RESULT_JSON_SCHEMA, REVIEW_RESULT_JSON_SCHEMA } from '@agent/shared';
 import { CliAgentAdapter } from './base.js';
 
@@ -67,5 +67,36 @@ export class ClaudeCodeAdapter extends CliAgentAdapter {
       // Kein JSON (z. B. Fehlerausgabe) — Rohtext zurückgeben.
     }
     return trimmed;
+  }
+
+  /**
+   * Liest den Token-Verbrauch aus dem `usage`-Block der Claude-JSON-Ausgabe
+   * (`--output-format json`, ADR-015). Fehlt der Block oder ist die Ausgabe kein
+   * JSON, liefert die Methode `null` — der Lauf zählt dann als „ohne Usage-Daten“.
+   */
+  protected override extractUsage(result: ProcessResult): AgentUsage | null {
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(result.stdout.trim());
+    } catch {
+      return null;
+    }
+    if (typeof parsed !== 'object' || parsed === null) return null;
+    const root = parsed as { usage?: unknown; total_cost_usd?: unknown };
+    if (typeof root.usage !== 'object' || root.usage === null) return null;
+    const usage = root.usage as Record<string, unknown>;
+    const num = (value: unknown): number => (typeof value === 'number' && value >= 0 ? value : 0);
+    const inputTokens = num(usage.input_tokens);
+    const outputTokens = num(usage.output_tokens);
+    const cacheCreationTokens = num(usage.cache_creation_input_tokens);
+    const cacheReadTokens = num(usage.cache_read_input_tokens);
+    return {
+      inputTokens,
+      outputTokens,
+      cacheReadTokens,
+      cacheCreationTokens,
+      totalTokens: inputTokens + outputTokens + cacheReadTokens + cacheCreationTokens,
+      costUsd: typeof root.total_cost_usd === 'number' ? root.total_cost_usd : null,
+    };
   }
 }

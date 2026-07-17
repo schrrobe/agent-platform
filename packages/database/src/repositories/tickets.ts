@@ -150,6 +150,18 @@ export class TicketsRepository {
     return row ? mapTicket(row) : undefined;
   }
 
+  updateDescription(id: string, description: string): Ticket {
+    const now = nowIso();
+    this.db
+      .prepare(
+        'UPDATE tickets SET description = ?, linear_updated_at = ?, updated_at = ? WHERE id = ?',
+      )
+      .run(description, now, now, id);
+    const ticket = this.get(id);
+    if (!ticket) throw new Error(`Ticket nicht gefunden: ${id}`);
+    return ticket;
+  }
+
   list(): Ticket[] {
     const rows = this.db
       .prepare('SELECT * FROM tickets ORDER BY imported_at ASC')

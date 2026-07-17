@@ -5,8 +5,18 @@ defineProps<{
   message: string;
   confirmLabel?: string;
   danger?: boolean;
+  checkboxLabel?: string;
+  checked?: boolean;
 }>();
-const emit = defineEmits<{ confirm: []; cancel: [] }>();
+const emit = defineEmits<{
+  confirm: [];
+  cancel: [];
+  'update:checked': [checked: boolean];
+}>();
+
+function updateChecked(event: Event): void {
+  emit('update:checked', (event.target as HTMLInputElement).checked);
+}
 </script>
 
 <template>
@@ -14,6 +24,10 @@ const emit = defineEmits<{ confirm: []; cancel: [] }>();
     <div class="dialog card">
       <h3>{{ title }}</h3>
       <p class="muted">{{ message }}</p>
+      <label v-if="checkboxLabel" class="option">
+        <input type="checkbox" :checked="checked" @change="updateChecked" />
+        <span>{{ checkboxLabel }}</span>
+      </label>
       <div class="actions">
         <button @click="emit('cancel')">Abbrechen</button>
         <button :class="{ danger }" class="primary" @click="emit('confirm')">
@@ -41,6 +55,18 @@ const emit = defineEmits<{ confirm: []; cancel: [] }>();
 }
 .dialog h3 {
   margin: 0 0 8px;
+}
+.option {
+  display: flex;
+  align-items: flex-start;
+  gap: 9px;
+  margin-top: 14px;
+  color: var(--text);
+  font-size: 13px;
+}
+.option input {
+  width: auto;
+  margin-top: 2px;
 }
 .actions {
   display: flex;

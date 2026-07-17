@@ -14,6 +14,11 @@ const booleanString = z
   .pipe(z.enum(['true', 'false', '1', '0', 'yes', 'no']))
   .transform((value) => value === 'true' || value === '1' || value === 'yes');
 
+const optionalPositiveNumber = z.preprocess(
+  (value) => (typeof value === 'string' && value.trim() === '' ? undefined : value),
+  z.coerce.number().positive().optional(),
+);
+
 const envSchema = z.object({
   NODE_ENV: z.enum(['development', 'production', 'test']).default('development'),
   HOST: z.string().default('127.0.0.1'),
@@ -27,6 +32,8 @@ const envSchema = z.object({
   REPO_ROOT: z.string().optional().default(''),
   WORKTREE_ROOT: z.string().optional().default(''),
   BASE_BRANCH: z.string().default('main'),
+  GIT_AUTHOR_NAME: z.string().trim().min(1).default('Robert Schreiner'),
+  GIT_AUTHOR_EMAIL: z.string().trim().email().default('robsch@stagedates.com'),
 
   CLAUDE_BIN: z.string().default('claude'),
   CODEX_BIN: z.string().default('codex'),
@@ -35,7 +42,7 @@ const envSchema = z.object({
   CODEX_MODEL: z.string().optional().default('gpt-5.6-sol'),
   CLAUDE_EFFORT: z.enum(['low', 'medium', 'high']).default('high'),
   CODEX_EFFORT: z.enum(['low', 'medium', 'high']).default('medium'),
-  CLAUDE_MAX_BUDGET_USD: z.coerce.number().positive().optional(),
+  CLAUDE_MAX_BUDGET_USD: optionalPositiveNumber,
 
   MAX_REVIEW_LOOPS: z.coerce.number().int().min(0).max(50).default(3),
   MAX_JOB_RUNTIME_MINUTES: z.coerce.number().int().min(1).max(1440).default(60),
@@ -63,6 +70,10 @@ export interface AppConfig {
     repoRoot: string;
     worktreeRoot: string;
     baseBranch: string;
+  };
+  gitIdentity: {
+    name: string;
+    email: string;
   };
   agents: {
     claudeBin: string;
@@ -134,6 +145,10 @@ export function loadConfig(source: NodeJS.ProcessEnv = process.env): AppConfig {
       repoRoot: env.REPO_ROOT ? resolveFromBase(env.REPO_ROOT) : '',
       worktreeRoot: env.WORKTREE_ROOT ? resolveFromBase(env.WORKTREE_ROOT) : '',
       baseBranch: env.BASE_BRANCH,
+    },
+    gitIdentity: {
+      name: env.GIT_AUTHOR_NAME,
+      email: env.GIT_AUTHOR_EMAIL,
     },
     agents: {
       claudeBin: env.CLAUDE_BIN,

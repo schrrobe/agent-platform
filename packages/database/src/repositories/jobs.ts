@@ -80,6 +80,11 @@ export interface JobPatch {
   finishedAt?: string | null;
 }
 
+export interface JobDeleteResult {
+  ticketId: string;
+  ticketDeleted: boolean;
+}
+
 const JOB_PATCH_COLUMNS: Record<keyof JobPatch, string> = {
   state: 'state',
   reviewLoopCount: 'review_loop_count',
@@ -241,5 +246,55 @@ export class JobsRepository {
       .prepare('SELECT id, active_pgid FROM jobs WHERE active_pgid IS NOT NULL')
       .all() as Array<{ id: string; active_pgid: number }>;
     return rows.map((row) => ({ jobId: row.id, pgid: row.active_pgid }));
+  }
+
+  private deleteRunData(jobId: string): void {
+    this.db.prepare('DELETE FROM review_iterations WHERE job_id = ?').run(jobId);
+    this.db.prepare('DELETE FROM artifacts WHERE job_id = ?').run(jobId);
+    this.db.prepare('DELETE FROM agent_runs WHERE job_id = ?').run(jobId);
+    this.db.prepare('DELETE FROM test_runs WHERE job_id = ?').run(jobId);
+    this.db.prepare('DELETE FROM job_events WHERE job_id = ?').run(jobId);
+  }
+
+  /** Entfernt alle Laufdaten und setzt denselben lokalen Job auf einen frischen Inbox-Zustand. */
+  resetToInbox(id: string, options: { clearGitMetadata: boolean }): Job {
+    if (!this.get(id)) throw new Error(`Job nicht gefunden: ${id}`);
+    this.db.transaction(() => {
+      this.deleteRunData(id);
+      const gitReset = options.clearGitMetadata
+        ? ', worktree_path = NULL, branch = NULL, base_commit_sha = NULL, head_commit_sha = NULL'
+        : '';
+      this.db
+        .prepare(
+          `UPDATE jobs SET state = 'inbox', review_loop_count = 0, base_stale = 0,
+            current_agent = NULL, pause_requested = 0, active_pgid = NULL, deadline_at = NULL,
+            last_error = NULL, started_at = NULL, finished_at = NULL, resume_phase = NULL,
+            plan_approved_at = NULL, updated_at = ?${gitReset}
+           WHERE id = ?`,
+        )
+        .run(nowIso(), id);
+    })();
+    const job = this.get(id);
+    if (!job) throw new Error(`Job nach Reset nicht auffindbar: ${id}`);
+    return job;
+  }
+
+  /** Löscht einen Job samt Laufdaten; ein nicht mehr referenziertes Ticket wird mit entfernt. */
+  deleteWithRelations(id: string): JobDeleteResult {
+    const job = this.get(id);
+    if (!job) throw new Error(`Job nicht gefunden: ${id}`);
+    let ticketDeleted = false;
+    this.db.transaction(() => {
+      this.deleteRunData(id);
+      this.db.prepare('DELETE FROM jobs WHERE id = ?').run(id);
+      const remaining = this.db
+        .prepare('SELECT COUNT(*) AS count FROM jobs WHERE ticket_id = ?')
+        .get(job.ticketId) as { count: number };
+      if (remaining.count === 0) {
+        this.db.prepare('DELETE FROM tickets WHERE id = ?').run(job.ticketId);
+        ticketDeleted = true;
+      }
+    })();
+    return { ticketId: job.ticketId, ticketDeleted };
   }
 }

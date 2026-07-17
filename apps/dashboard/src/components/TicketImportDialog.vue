@@ -9,26 +9,56 @@ const emit = defineEmits<{ close: [] }>();
 const projects = useProjectsStore();
 const jobs = useJobsStore();
 
-const identifier = ref('');
+const identifiersInput = ref('');
 const projectId = ref(
   projects.projects.find((p) => p.active)?.id ?? projects.projects[0]?.id ?? '',
 );
 const submitting = ref(false);
 const error = ref<string | null>(null);
+const success = ref<string | null>(null);
 
-const valid = computed(() => IDENTIFIER_RE.test(identifier.value.trim()) && projectId.value !== '');
+const identifiers = computed(() => {
+  const seen = new Set<string>();
+  return identifiersInput.value
+    .split(/[\s,;]+/)
+    .map((value) => value.trim())
+    .filter((value) => {
+      const key = value.toLowerCase();
+      if (!value || seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    });
+});
+const invalidIdentifiers = computed(() =>
+  identifiers.value.filter((identifier) => !IDENTIFIER_RE.test(identifier)),
+);
+const valid = computed(
+  () =>
+    identifiers.value.length > 0 &&
+    identifiers.value.length <= 100 &&
+    invalidIdentifiers.value.length === 0 &&
+    projectId.value !== '',
+);
 
 async function submit(): Promise<void> {
   if (!valid.value) return;
   submitting.value = true;
   error.value = null;
+  success.value = null;
   try {
-    const job = await api.importTicket({
-      identifier: identifier.value.trim(),
+    const result = await api.importTickets({
+      identifiers: identifiers.value,
       projectId: projectId.value,
     });
-    jobs.upsert(job);
-    emit('close');
+    for (const job of result.jobs) jobs.upsert(job);
+    if (result.failures.length === 0) {
+      emit('close');
+      return;
+    }
+    success.value = `${result.jobs.length} Ticket(s) erfolgreich importiert.`;
+    error.value = result.failures
+      .map((failure) => `${failure.identifier}: ${failure.message}`)
+      .join('\n');
   } catch (err) {
     error.value = err instanceof ApiClientError ? err.message : (err as Error).message;
   } finally {
@@ -40,12 +70,19 @@ async function submit(): Promise<void> {
 <template>
   <div class="overlay" @click.self="emit('close')">
     <div class="dialog card">
-      <h3>Ticket importieren</h3>
-      <p class="muted">Lädt Titel, Beschreibung und Metadaten aus Linear (nur lesend).</p>
+      <h3>Tickets importieren</h3>
+      <p class="muted">
+        Lädt bis zu 100 Tickets aus Linear und ordnet sie gemeinsam einem Projekt zu.
+      </p>
 
       <div class="field">
-        <label>Linear-Identifier</label>
-        <input v-model="identifier" placeholder="APP-123" @keyup.enter="submit" />
+        <label>Linear-Identifier (mit Leerzeichen, Komma oder neuer Zeile trennen)</label>
+        <textarea
+          v-model="identifiersInput"
+          rows="6"
+          placeholder="APP-123&#10;APP-124&#10;WEB-42"
+        />
+        <span class="faint count">{{ identifiers.length }}/100 Tickets</span>
       </div>
       <div class="field">
         <label>Projekt</label>
@@ -56,12 +93,16 @@ async function submit(): Promise<void> {
       <p v-if="projects.projects.length === 0" class="warn">
         Kein Projekt vorhanden — lege zuerst unter „Projekte" eines an.
       </p>
-      <p v-if="error" class="warn">{{ error }}</p>
+      <p v-if="invalidIdentifiers.length" class="warn">
+        Ungültige Identifier: {{ invalidIdentifiers.join(', ') }}
+      </p>
+      <p v-if="success" class="success">{{ success }}</p>
+      <pre v-if="error" class="warn">{{ error }}</pre>
 
       <div class="actions">
         <button @click="emit('close')">Abbrechen</button>
         <button class="primary" :disabled="!valid || submitting" @click="submit">
-          {{ submitting ? 'Importiere…' : 'Importieren' }}
+          {{ submitting ? 'Importiere…' : `${identifiers.length || ''} importieren` }}
         </button>
       </div>
     </div>
@@ -79,7 +120,7 @@ async function submit(): Promise<void> {
   z-index: 100;
 }
 .dialog {
-  width: min(460px, 92vw);
+  width: min(560px, 92vw);
   padding: 22px;
   box-shadow: var(--shadow);
 }
@@ -95,5 +136,15 @@ async function submit(): Promise<void> {
 .warn {
   color: var(--c-fail);
   font-size: 12.5px;
+}
+.success {
+  color: var(--c-done);
+  font-size: 12.5px;
+}
+.count {
+  display: block;
+  margin-top: 4px;
+  font-size: 12px;
+  text-align: right;
 }
 </style>

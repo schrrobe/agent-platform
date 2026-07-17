@@ -3,7 +3,7 @@
  * Test-/Setup-Befehle niemals Modell-Credentials oder das echte HOME.
  */
 
-const RUNTIME_KEYS = ['PATH', 'LANG', 'LC_ALL', 'TMPDIR'] as const;
+const RUNTIME_KEYS = ['PATH', 'LANG', 'LC_ALL', 'TMPDIR', 'USER', 'LOGNAME'] as const;
 
 function runtimeEnv(source: NodeJS.ProcessEnv): Record<string, string> {
   const env: Record<string, string> = {};
@@ -26,7 +26,17 @@ function copy(source: NodeJS.ProcessEnv, target: Record<string, string>, keys: r
 
 export function buildClaudeEnv(source: NodeJS.ProcessEnv = process.env): Record<string, string> {
   const env = runtimeEnv(source);
-  copy(source, env, ['HOME', 'ANTHROPIC_API_KEY', 'CLAUDE_CONFIG_DIR']);
+  copy(source, env, [
+    'HOME',
+    'ANTHROPIC_API_KEY',
+    'CLAUDE_CONFIG_DIR',
+    'CLAUDE_CODE_OAUTH_TOKEN',
+    'ANTHROPIC_BASE_URL',
+    'ANTHROPIC_AUTH_TOKEN',
+    'HTTPS_PROXY',
+    'HTTP_PROXY',
+    'NO_PROXY',
+  ]);
   return env;
 }
 

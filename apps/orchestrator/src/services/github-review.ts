@@ -295,7 +295,7 @@ export class GithubReviewService {
 
       const commit = await this.deps.git.commitStaged(
         job.worktreePath,
-        `fix: address GitHub review feedback for ${ticket.identifier}`,
+        `fix: ${ticket.identifier} ${ticket.title} review feedback`,
       );
       const finalizedHead = commit ?? beforeHead;
       // Ein verifizierter Commit ist ab jetzt der Recovery-Anker und darf bei

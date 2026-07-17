@@ -8,7 +8,8 @@ import { LinearService, type LinearClientLike } from '@agent/linear';
 import type { AppConfig } from '../../src/config.js';
 import { bootstrap } from '../../src/server.js';
 import type { AppContext } from '../../src/context.js';
-import type { JobState, JobSummary } from '@agent/shared';
+import type { JobState, JobSummary, TestExecutionMode } from '@agent/shared';
+import type { DirectoryPickerKind } from '../../src/services/directory-picker.js';
 
 const TERMINAL: JobState[] = [
   'ready_for_human',
@@ -34,6 +35,9 @@ export interface HarnessOptions {
   linearWriteComments?: boolean;
   planRiskLevel?: 'low' | 'medium' | 'high';
   planQuestions?: string[];
+  directoryPicker?: (kind: DirectoryPickerKind) => Promise<string | null>;
+  setupCommand?: string;
+  testExecutionMode?: TestExecutionMode;
 }
 
 export interface Harness {
@@ -44,6 +48,8 @@ export interface Harness {
   worktreeRoot: string;
   projectId: string;
   stateFile: string;
+  /** Kommandozeilen, die die Fake-Sandbox-Runtime (srt) tatsächlich gewrappt hat. */
+  srtInvocations(): string[][];
   seedJob(identifier?: string): JobSummary;
   waitForState(jobId: string, states?: JobState[], timeoutMs?: number): Promise<JobState>;
   cleanup(): Promise<void>;
@@ -126,6 +132,26 @@ process.stdout.write('codex fake run ' + run + '\\n');
 `;
 }
 
+/**
+ * Fake Sandbox Runtime: entfernt `--settings <path>` und führt den Rest direkt
+ * aus. Protokolliert jede gewrappte Kommandozeile, damit Tests belegen können,
+ * ob ein Befehl über die Sandbox (srt) oder trusted/direkt lief.
+ */
+function srtScript(logFile: string): string {
+  return `#!/usr/bin/env node
+import fs from 'node:fs';
+import { spawnSync } from 'node:child_process';
+const LOG = ${JSON.stringify(logFile)};
+const argv = process.argv.slice(2);
+const settingsIdx = argv.indexOf('--settings');
+const rest = settingsIdx >= 0 ? argv.slice(settingsIdx + 2) : argv;
+fs.appendFileSync(LOG, JSON.stringify(rest) + '\\n');
+const [cmd, ...cmdArgs] = rest;
+const result = spawnSync(cmd, cmdArgs, { stdio: 'inherit' });
+process.exit(result.status ?? 1);
+`;
+}
+
 export async function createHarness(options: HarnessOptions = {}): Promise<Harness> {
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'agent-e2e-'));
   const repoDir = path.join(tmp, 'repo');
@@ -145,6 +171,8 @@ export async function createHarness(options: HarnessOptions = {}): Promise<Harne
 
   const claudeBin = path.join(binDir, 'fake-claude.mjs');
   const codexBin = path.join(binDir, 'fake-codex.mjs');
+  const srtBin = path.join(binDir, 'fake-srt.mjs');
+  const srtLogFile = path.join(tmp, 'srt-invocations.log');
   fs.writeFileSync(
     claudeBin,
     claudeScript(
@@ -161,8 +189,10 @@ export async function createHarness(options: HarnessOptions = {}): Promise<Harne
       noChange: options.codexNoChange ?? false,
     }),
   );
+  fs.writeFileSync(srtBin, srtScript(srtLogFile));
   fs.chmodSync(claudeBin, 0o755);
   fs.chmodSync(codexBin, 0o755);
+  fs.chmodSync(srtBin, 0o755);
 
   const config: AppConfig = {
     nodeEnv: 'test',
@@ -172,11 +202,12 @@ export async function createHarness(options: HarnessOptions = {}): Promise<Harne
     dataDir,
     logsDir: path.join(dataDir, 'logs'),
     linear: { apiKey: '', writeComments: false },
-    defaults: { repoRoot: '', worktreeRoot: '', baseBranch: 'main' },
+    defaults: { repoRoot: tmp, worktreeRoot: '', baseBranch: 'main' },
+    gitIdentity: { name: 'Robert Schreiner', email: 'robsch@stagedates.com' },
     agents: {
       claudeBin,
       codexBin,
-      srtBin: 'srt',
+      srtBin,
       claudeModel: undefined,
       codexModel: undefined,
       claudeEffort: 'high',
@@ -203,6 +234,7 @@ export async function createHarness(options: HarnessOptions = {}): Promise<Harne
     config,
     logger: pino({ level: 'silent' }),
     context: linear ? { linear } : undefined,
+    projectRoutes: options.directoryPicker ? { pickDirectory: options.directoryPicker } : undefined,
   });
 
   const testCommand =
@@ -214,9 +246,12 @@ export async function createHarness(options: HarnessOptions = {}): Promise<Harne
     repositoryPath: repoDir,
     baseBranch: 'main',
     worktreeRoot,
-    commands: testCommand ? { test: testCommand } : {},
+    commands: {
+      ...(testCommand ? { test: testCommand } : {}),
+      ...(options.setupCommand ? { setup: options.setupCommand } : {}),
+    },
     autonomyMode: 'full_auto',
-    testExecutionMode: 'trusted',
+    testExecutionMode: options.testExecutionMode ?? 'trusted',
     baselineChecks: false,
     maxChangedFiles: 100,
     maxDiffBytes: 1024 * 1024,
@@ -275,6 +310,19 @@ export async function createHarness(options: HarnessOptions = {}): Promise<Harne
     fs.rmSync(tmp, { recursive: true, force: true });
   };
 
+  const srtInvocations = (): string[][] => {
+    let raw: string;
+    try {
+      raw = fs.readFileSync(srtLogFile, 'utf8');
+    } catch {
+      return [];
+    }
+    return raw
+      .split('\n')
+      .filter((line) => line.length > 0)
+      .map((line) => JSON.parse(line) as string[]);
+  };
+
   return {
     ctx,
     app,
@@ -283,6 +331,7 @@ export async function createHarness(options: HarnessOptions = {}): Promise<Harne
     worktreeRoot,
     projectId: project.id,
     stateFile,
+    srtInvocations,
     seedJob,
     waitForState,
     cleanup,

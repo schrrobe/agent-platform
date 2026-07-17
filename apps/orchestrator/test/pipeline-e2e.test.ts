@@ -1,3 +1,4 @@
+import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
@@ -36,12 +37,18 @@ describe('Pipeline E2E (Fake-Claude/-Codex)', () => {
 
     const finished = harness.ctx.repos.jobs.get(job.id)!;
     const suffix = job.id.replaceAll('-', '');
-    expect(finished.branch).toBe(`feature/app-1/${suffix}`);
+    expect(finished.branch).toBe('feature/app-1/ticket-app-1');
     expect(finished.worktreePath).toBe(path.join(harness.worktreeRoot, `app-1-${suffix}`));
     expect(finished.baseCommitSha).toMatch(/^[0-9a-f]{40}$/);
     expect(finished.headCommitSha).toMatch(/^[0-9a-f]{40}$/);
     expect(finished.finishedAt).not.toBeNull();
     expect(finished.reviewLoopCount).toBe(0);
+
+    expect(
+      execFileSync('git', ['-C', finished.worktreePath!, 'log', '-1', '--format=%an|%ae|%s'], {
+        encoding: 'utf8',
+      }).trim(),
+    ).toBe('Robert Schreiner|robsch@stagedates.com|feature: APP-1 Ticket APP-1');
 
     // Worktree existiert und enthält die von Codex erzeugte Datei.
     expect(fs.existsSync(path.join(finished.worktreePath!, 'impl.txt'))).toBe(true);
@@ -73,6 +80,25 @@ describe('Pipeline E2E (Fake-Claude/-Codex)', () => {
 
     // Live-Logs wurden geschrieben.
     expect(harness.ctx.logStore.read(job.id).length).toBeGreaterThan(0);
+  });
+
+  it('führt die setup-Prüfung im sandboxed-Projekt dennoch trusted/netzwerkoffen aus', async () => {
+    harness = await createHarness({
+      reviewSequence: 'PASS',
+      testExecutionMode: 'sandboxed',
+      setupCommand: nodeCommand('process.exit(0)'),
+    });
+    const job = harness.seedJob('APP-20');
+    await harness.ctx.jobs.start(job.id);
+    const state = await harness.waitForState(job.id, ['ready_for_human', 'failed', 'needs_human']);
+    expect(state).toBe('ready_for_human');
+
+    // 'setup' installiert Abhängigkeiten und braucht Netzwerk — er darf nie über
+    // die (netzwerkgesperrte) Sandbox-Runtime laufen, weder in der Baseline noch
+    // in der Iteration. Nur die eigentliche (sandboxed) Testprüfung läuft über
+    // die Fake-Sandbox-Runtime (srt) — hier genau einmal, in der Iteration
+    // (Baseline-Prüfungen sind standardmäßig deaktiviert).
+    expect(harness.srtInvocations().length).toBe(1);
   });
 
   it('macht nach Review-FAIL Nacharbeit und besteht dann (rework → ready_for_human)', async () => {

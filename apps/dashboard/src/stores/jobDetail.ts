@@ -62,6 +62,7 @@ export const useJobDetailStore = defineStore('jobDetail', () => {
         ];
         break;
       case 'job.state_changed':
+      case 'job.updated':
       case 'agent.completed':
       case 'agent.started':
       case 'artifact.created':
@@ -70,6 +71,9 @@ export const useJobDetailStore = defineStore('jobDetail', () => {
       case 'test.completed':
         // Verlaufsdaten neu laden (günstig, lokal).
         void refresh();
+        break;
+      case 'job.deleted':
+        close();
         break;
       default:
         break;

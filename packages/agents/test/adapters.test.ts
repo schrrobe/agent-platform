@@ -141,6 +141,53 @@ describe('ClaudeCodeAdapter', () => {
     const result = await new ClaudeCodeAdapter({ runner, env: {} }).execute(baseInput());
     expect(result.truncated).toBe(true);
   });
+
+  it('liest Token-Verbrauch und Kosten aus dem usage-Block', async () => {
+    const runner = new RecordingRunner(
+      makeResult({
+        stdout: JSON.stringify({
+          result: 'PLAN',
+          usage: {
+            input_tokens: 100,
+            output_tokens: 40,
+            cache_creation_input_tokens: 10,
+            cache_read_input_tokens: 200,
+          },
+          total_cost_usd: 0.0123,
+        }),
+      }),
+    );
+    const result = await new ClaudeCodeAdapter({ runner, env: {} }).execute(baseInput());
+    expect(result.usage).toEqual({
+      inputTokens: 100,
+      outputTokens: 40,
+      cacheCreationTokens: 10,
+      cacheReadTokens: 200,
+      totalTokens: 350,
+      costUsd: 0.0123,
+    });
+  });
+
+  it('liefert usage=null ohne usage-Block und bei Nicht-JSON', async () => {
+    const withoutUsage = new RecordingRunner(makeResult({ stdout: '{"result":"PLAN"}' }));
+    expect(
+      (await new ClaudeCodeAdapter({ runner: withoutUsage, env: {} }).execute(baseInput())).usage,
+    ).toBeNull();
+
+    const plain = new RecordingRunner(makeResult({ stdout: 'kein-json' }));
+    expect(
+      (await new ClaudeCodeAdapter({ runner: plain, env: {} }).execute(baseInput())).usage,
+    ).toBeNull();
+  });
+
+  it('erfasst keine usage bei fehlgeschlagenem Lauf', async () => {
+    const runner = new RecordingRunner(
+      makeResult({ exitCode: 1, stdout: JSON.stringify({ usage: { input_tokens: 5 } }) }),
+    );
+    const result = await new ClaudeCodeAdapter({ runner, env: {} }).execute(baseInput());
+    expect(result.status).toBe('failed');
+    expect(result.usage).toBeNull();
+  });
 });
 
 describe('CodexCliAdapter', () => {

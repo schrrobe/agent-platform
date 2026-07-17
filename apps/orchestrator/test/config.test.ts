@@ -6,11 +6,20 @@ describe('loadConfig model overrides', () => {
     const config = loadConfig({});
     expect(config.agents.claudeModel).toBe('opus');
     expect(config.agents.codexModel).toBe('gpt-5.6-sol');
+    expect(config.gitIdentity).toEqual({
+      name: 'Robert Schreiner',
+      email: 'robsch@stagedates.com',
+    });
   });
 
   it('respektiert leere Variablen als expliziten CLI-Default-Opt-out', () => {
     const config = loadConfig({ CLAUDE_MODEL: '', CODEX_MODEL: '' });
     expect(config.agents.claudeModel).toBeUndefined();
     expect(config.agents.codexModel).toBeUndefined();
+  });
+
+  it('akzeptiert ein leeres optionales Claude-Kostenlimit', () => {
+    const config = loadConfig({ CLAUDE_MAX_BUDGET_USD: '' });
+    expect(config.agents.claudeMaxBudgetUsd).toBeUndefined();
   });
 });

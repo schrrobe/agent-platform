@@ -1,5 +1,7 @@
 import type {
   Artifact,
+  BulkImportRequestInput,
+  BulkTicketImportResult,
   ImportRequestInput,
   JobDetail,
   GithubReviewActionResult,
@@ -9,6 +11,7 @@ import type {
   Project,
   ProjectCreateInput,
   ProjectUpdateInput,
+  TokenStats,
 } from '@agent/shared';
 import { isApiErrorBody } from '@agent/shared';
 
@@ -55,6 +58,18 @@ async function request<T>(url: string, init?: RequestInit): Promise<T> {
 export const api = {
   health: () => request<{ status: string }>('/api/health'),
 
+  listRepositories: () =>
+    request<{
+      root: string | null;
+      repositories: Array<{ name: string; path: string }>;
+    }>('/api/repositories'),
+
+  pickDirectory: (kind: 'repository' | 'worktree') =>
+    request<{ path: string | null; cancelled: boolean }>('/api/pick-directory', {
+      method: 'POST',
+      body: JSON.stringify({ kind }),
+    }),
+
   listProjects: () => request<{ projects: Project[] }>('/api/projects').then((r) => r.projects),
   createProject: (input: ProjectCreateInput) =>
     request<{ project: Project }>('/api/projects', {
@@ -75,12 +90,32 @@ export const api = {
       method: 'POST',
       body: JSON.stringify(input),
     }).then((r) => r.job),
+  importTickets: (input: BulkImportRequestInput) =>
+    request<{ result: BulkTicketImportResult }>('/api/jobs/import-bulk', {
+      method: 'POST',
+      body: JSON.stringify(input),
+    }).then((r) => r.result),
+  updateTicketDescription: (id: string, description: string) =>
+    request<{ job: JobSummary }>(`/api/jobs/${id}/ticket-description`, {
+      method: 'PATCH',
+      body: JSON.stringify({ description }),
+    }).then((r) => r.job),
   startJob: (id: string) =>
     request<{ job: JobSummary }>(`/api/jobs/${id}/start`, { method: 'POST' }).then((r) => r.job),
   pauseJob: (id: string) =>
     request<{ job: JobSummary }>(`/api/jobs/${id}/pause`, { method: 'POST' }).then((r) => r.job),
   retryJob: (id: string) =>
     request<{ job: JobSummary }>(`/api/jobs/${id}/retry`, { method: 'POST' }).then((r) => r.job),
+  resetJob: (id: string, removeWorktree: boolean) =>
+    request<{ job: JobSummary }>(`/api/jobs/${id}/reset`, {
+      method: 'POST',
+      body: JSON.stringify({ removeWorktree }),
+    }).then((r) => r.job),
+  deleteJob: (id: string, removeWorktree: boolean) =>
+    request<void>(`/api/jobs/${id}`, {
+      method: 'DELETE',
+      body: JSON.stringify({ removeWorktree }),
+    }),
   approvePlan: (id: string, note = '') =>
     request<{ job: JobSummary }>(`/api/jobs/${id}/approve-plan`, {
       method: 'POST',
@@ -104,4 +139,6 @@ export const api = {
     ).then((r) => r.logs),
   getArtifacts: (id: string) =>
     request<{ artifacts: Artifact[] }>(`/api/jobs/${id}/artifacts`).then((r) => r.artifacts),
+
+  tokenStats: () => request<TokenStats>('/api/stats/tokens'),
 };

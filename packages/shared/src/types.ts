@@ -100,6 +100,16 @@ export interface JobSummary extends Job {
   repositoryPath: string;
 }
 
+export interface TicketImportFailure {
+  identifier: string;
+  message: string;
+}
+
+export interface BulkTicketImportResult {
+  jobs: JobSummary[];
+  failures: TicketImportFailure[];
+}
+
 export interface JobEvent {
   id: number;
   jobId: string;
@@ -121,6 +131,13 @@ export interface AgentRun {
   output: string | null;
   outputTruncated: boolean;
   error: string | null;
+  /** Token-Verbrauch; `null`, wenn der Agent keine Usage-Daten meldet. */
+  inputTokens: number | null;
+  outputTokens: number | null;
+  cacheReadTokens: number | null;
+  cacheCreationTokens: number | null;
+  totalTokens: number | null;
+  costUsd: number | null;
   startedAt: IsoDateTime;
   finishedAt: IsoDateTime | null;
 }

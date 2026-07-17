@@ -1,16 +1,82 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import type { FastifyInstance } from 'fastify';
+import { z } from 'zod';
 import { projectCreateSchema, projectUpdateSchema } from '@agent/shared';
 import type { AppContext } from '../../context.js';
 import { ApiError, parseBody } from '../errors.js';
+import {
+  DirectoryPickerUnavailableError,
+  pickDirectory,
+  type DirectoryPickerKind,
+} from '../../services/directory-picker.js';
+
+const directoryPickerSchema = z.object({
+  kind: z.enum(['repository', 'worktree']),
+});
+
+export interface ProjectRouteOptions {
+  pickDirectory?: (kind: DirectoryPickerKind) => Promise<string | null>;
+}
+
+interface RepositoryOption {
+  name: string;
+  path: string;
+}
+
+async function discoverRepositories(ctx: AppContext): Promise<RepositoryOption[]> {
+  const root = ctx.config.defaults.repoRoot;
+  if (!root) return [];
+
+  let entries: fs.Dirent[];
+  try {
+    entries = fs.readdirSync(root, { withFileTypes: true });
+  } catch {
+    throw ApiError.validation(`Repository-Wurzel ist nicht erreichbar: ${root}`);
+  }
+
+  const repositories: RepositoryOption[] = [];
+  for (const entry of entries.sort((a, b) => a.name.localeCompare(b.name, 'de'))) {
+    if (!entry.isDirectory() || entry.name.startsWith('.')) continue;
+    const repositoryPath = path.join(root, entry.name);
+    if (!fs.existsSync(path.join(repositoryPath, '.git'))) continue;
+    if (await ctx.git.isGitRepo(repositoryPath)) {
+      repositories.push({ name: entry.name, path: repositoryPath });
+    }
+  }
+  return repositories;
+}
 
 function resolvePath(base: string, value: string): string {
   return path.isAbsolute(value) ? value : path.resolve(base, value);
 }
 
-export function registerProjectRoutes(app: FastifyInstance, ctx: AppContext): void {
+export function registerProjectRoutes(
+  app: FastifyInstance,
+  ctx: AppContext,
+  options: ProjectRouteOptions = {},
+): void {
+  const chooseDirectory = options.pickDirectory ?? pickDirectory;
+
   app.get('/api/projects', async () => ({ projects: ctx.repos.projects.list() }));
+
+  app.get('/api/repositories', async () => ({
+    root: ctx.config.defaults.repoRoot || null,
+    repositories: await discoverRepositories(ctx),
+  }));
+
+  app.post('/api/pick-directory', async (request) => {
+    const { kind } = parseBody(directoryPickerSchema, request.body);
+    try {
+      const directory = await chooseDirectory(kind);
+      return { path: directory, cancelled: directory === null };
+    } catch (error) {
+      if (error instanceof DirectoryPickerUnavailableError) {
+        throw new ApiError('INTERNAL', 501, error.message);
+      }
+      throw new ApiError('INTERNAL', 500, 'Ordnerauswahl konnte nicht geöffnet werden.');
+    }
+  });
 
   app.post('/api/projects', async (request, reply) => {
     const input = parseBody(projectCreateSchema, request.body);

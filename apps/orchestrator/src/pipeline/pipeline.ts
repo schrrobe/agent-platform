@@ -34,6 +34,7 @@ import {
   type PlanResult,
   type Project,
   type ReviewResult,
+  type TestExecutionMode,
   type Ticket,
 } from '@agent/shared';
 import type { Repositories } from '@agent/database';
@@ -242,7 +243,7 @@ export class JobPipeline {
       const branch = await this.deps.git.allocateBranch(
         project.repositoryPath,
         ticket.identifier,
-        jobId,
+        ticket.title,
         branchKindForTicket(ticket.title, ticket.labels),
       );
       job = this.deps.repos.jobs.update(jobId, { branch });
@@ -251,6 +252,7 @@ export class JobPipeline {
       repositoryPath: project.repositoryPath,
       worktreeRoot: project.worktreeRoot,
       identifier: ticket.identifier,
+      title: ticket.title,
       expectedBranch: job.branch,
       jobId,
       baseBranch: job.baseBranch,
@@ -407,7 +409,7 @@ export class JobPipeline {
     this.verifyOwner(jobId, project);
     const commit = await this.deps.git.commitAll(
       worktree,
-      `${branchKindForTicket(ticket.title, ticket.labels)}: ${ticket.identifier} iteration ${iteration}`,
+      `${branchKindForTicket(ticket.title, ticket.labels)}: ${ticket.identifier} ${ticket.title}${iteration > 1 ? ` (iteration ${iteration})` : ''}`,
     );
     const base = this.baseCommit(job);
     const changed = await this.deps.git.changedFiles(worktree, base);
@@ -538,6 +540,9 @@ export class JobPipeline {
           { cause: error },
         );
       }
+      // 'setup' installiert Abhängigkeiten und braucht Registry-Netzwerk; die
+      // sandboxed-Netzwerksperre würde jeden Install-Drift-Fall in ENOTFOUND laufen lassen.
+      const mode: TestExecutionMode = key === 'setup' ? 'trusted' : project.testExecutionMode;
       const beforeHead = await this.deps.git.currentHead(worktree);
       const testRun = this.deps.repos.testRuns.insert({
         jobId,
@@ -545,7 +550,7 @@ export class JobPipeline {
         commandKey: key,
         command: commandString,
         baseline,
-        sandboxed: project.testExecutionMode === 'sandboxed',
+        sandboxed: mode === 'sandboxed',
       });
       this.deps.publisher.emit('test.started', jobId, {
         testRunId: testRun.id,
@@ -555,7 +560,7 @@ export class JobPipeline {
 
       const { handle } = await this.deps.testSandbox.run({
         jobId,
-        mode: project.testExecutionMode,
+        mode,
         command,
         args,
         cwd: worktree,
@@ -851,6 +856,12 @@ export class JobPipeline {
         output: result.output,
         outputTruncated: result.truncated,
         error: result.error,
+        inputTokens: result.usage?.inputTokens ?? null,
+        outputTokens: result.usage?.outputTokens ?? null,
+        cacheReadTokens: result.usage?.cacheReadTokens ?? null,
+        cacheCreationTokens: result.usage?.cacheCreationTokens ?? null,
+        totalTokens: result.usage?.totalTokens ?? null,
+        costUsd: result.usage?.costUsd ?? null,
         finishedAt: new Date().toISOString(),
       });
       repos.jobs.update(input.jobId, { currentAgent: null, activePgid: null });

@@ -254,6 +254,85 @@ describe('Repositories', () => {
     expect(repos.testRuns.listByJob(job.id)).toHaveLength(1);
   });
 
+  it('tokenStats aggregiert Token pro Job, Agent und Phase', () => {
+    const project = seedProject(repos);
+    const ticket1 = seedTicket(repos, project.id);
+    const job1 = repos.jobs.insert({
+      ticketId: ticket1.id,
+      projectId: project.id,
+      baseBranch: 'main',
+    });
+    const ticket2 = repos.tickets.upsert({
+      projectId: project.id,
+      linearIssueId: 'lin-uuid-2',
+      identifier: 'APP-999',
+      title: 'Zweites Ticket',
+      description: '',
+      url: 'https://linear.app/demo/issue/APP-999',
+      teamKey: 'APP',
+      teamName: 'App-Team',
+      priority: 2,
+      priorityLabel: 'High',
+      labels: [],
+      linearState: 'Todo',
+      linearCreatedAt: '2026-07-01T10:00:00.000Z',
+      linearUpdatedAt: '2026-07-02T10:00:00.000Z',
+    });
+    const job2 = repos.jobs.insert({
+      ticketId: ticket2.id,
+      projectId: project.id,
+      baseBranch: 'main',
+    });
+
+    const plan = repos.agentRuns.insert({ jobId: job1.id, phase: 'plan', agent: 'claude' });
+    repos.agentRuns.update(plan.id, {
+      status: 'completed',
+      inputTokens: 100,
+      outputTokens: 20,
+      cacheReadTokens: 200,
+      cacheCreationTokens: 10,
+      totalTokens: 330,
+      costUsd: 0.01,
+    });
+    // Codex-Lauf ohne Usage-Daten — zählt als "runsMissingUsage".
+    const impl = repos.agentRuns.insert({ jobId: job1.id, phase: 'implement', agent: 'codex' });
+    repos.agentRuns.update(impl.id, { status: 'completed' });
+    const review = repos.agentRuns.insert({ jobId: job2.id, phase: 'review', agent: 'claude' });
+    repos.agentRuns.update(review.id, {
+      status: 'completed',
+      inputTokens: 30,
+      outputTokens: 20,
+      cacheReadTokens: 0,
+      cacheCreationTokens: 0,
+      totalTokens: 50,
+      costUsd: 0.005,
+    });
+
+    const stats = repos.agentRuns.tokenStats();
+
+    expect(stats.totals.totalTokens).toBe(380);
+    expect(stats.totals.costUsd).toBeCloseTo(0.015, 6);
+    expect(stats.totals.runCount).toBe(2);
+    expect(stats.totals.runsMissingUsage).toBe(1);
+
+    // Nach Gesamt-Token absteigend sortiert.
+    expect(stats.perJob.map((j) => j.ticketIdentifier)).toEqual(['APP-123', 'APP-999']);
+    expect(stats.perJob[0]?.totals.totalTokens).toBe(330);
+    expect(stats.perJob[0]?.totals.runsMissingUsage).toBe(1);
+    expect(stats.perJob[0]?.projectName).toBe('Demo');
+    expect(stats.perJob[1]?.totals.totalTokens).toBe(50);
+
+    const claude = stats.perAgent.find((a) => a.agent === 'claude');
+    const codex = stats.perAgent.find((a) => a.agent === 'codex');
+    expect(claude?.totals.totalTokens).toBe(380);
+    expect(claude?.totals.runCount).toBe(2);
+    expect(codex?.totals.totalTokens).toBe(0);
+    expect(codex?.totals.runsMissingUsage).toBe(1);
+
+    const planPhase = stats.perPhase.find((p) => p.phase === 'plan');
+    expect(planPhase?.totals.totalTokens).toBe(330);
+  });
+
   it('failAllRunning markiert laufende AgentRuns als canceled', () => {
     const project = seedProject(repos);
     const ticket = seedTicket(repos, project.id);
@@ -278,6 +357,81 @@ describe('Repositories', () => {
     });
     expect(repos.testRuns.failAllRunning('Durch Neustart unterbrochen')).toBe(1);
     expect(repos.testRuns.get(testRun.id)?.status).toBe('canceled');
+  });
+
+  it('setzt einen Job samt Laufdaten atomar auf Inbox zurück', () => {
+    const project = seedProject(repos);
+    const ticket = seedTicket(repos, project.id);
+    const job = repos.jobs.insert({
+      ticketId: ticket.id,
+      projectId: project.id,
+      baseBranch: 'main',
+    });
+    repos.jobs.update(job.id, {
+      state: 'failed',
+      reviewLoopCount: 2,
+      worktreePath: '/worktrees/demo/app-123',
+      branch: 'fix/app-123/job',
+      baseCommitSha: 'base123',
+      headCommitSha: 'head123',
+      lastError: 'kaputt',
+    });
+    const run = repos.agentRuns.insert({ jobId: job.id, phase: 'plan', agent: 'claude' });
+    const artifact = repos.artifacts.insert({
+      jobId: job.id,
+      agentRunId: run.id,
+      type: 'plan',
+      content: 'Plan',
+    });
+    repos.reviewIterations.insert({
+      jobId: job.id,
+      iteration: 1,
+      verdict: 'FAIL',
+      artifactId: artifact.id,
+    });
+    repos.testRuns.insert({
+      jobId: job.id,
+      iteration: 1,
+      commandKey: 'test',
+      command: 'pnpm test',
+    });
+    repos.jobEvents.append({ jobId: job.id, type: 'job.failed' });
+
+    const reset = repos.jobs.resetToInbox(job.id, { clearGitMetadata: true });
+    expect(reset).toMatchObject({
+      state: 'inbox',
+      reviewLoopCount: 0,
+      worktreePath: null,
+      branch: null,
+      baseCommitSha: null,
+      headCommitSha: null,
+      lastError: null,
+    });
+    expect(repos.agentRuns.listByJob(job.id)).toHaveLength(0);
+    expect(repos.artifacts.listByJob(job.id)).toHaveLength(0);
+    expect(repos.reviewIterations.listByJob(job.id)).toHaveLength(0);
+    expect(repos.testRuns.listByJob(job.id)).toHaveLength(0);
+    expect(repos.jobEvents.listByJob(job.id)).toHaveLength(0);
+  });
+
+  it('löscht Jobs mit Relationen und das Ticket erst nach dem letzten Job', () => {
+    const project = seedProject(repos);
+    const ticket = seedTicket(repos, project.id);
+    const first = repos.jobs.insert({
+      ticketId: ticket.id,
+      projectId: project.id,
+      baseBranch: 'main',
+    });
+    const second = repos.jobs.insert({
+      ticketId: ticket.id,
+      projectId: project.id,
+      baseBranch: 'main',
+    });
+
+    expect(repos.jobs.deleteWithRelations(first.id).ticketDeleted).toBe(false);
+    expect(repos.tickets.get(ticket.id)).toBeDefined();
+    expect(repos.jobs.deleteWithRelations(second.id).ticketDeleted).toBe(true);
+    expect(repos.tickets.get(ticket.id)).toBeUndefined();
   });
 
   it('Settings: get/set/all', () => {

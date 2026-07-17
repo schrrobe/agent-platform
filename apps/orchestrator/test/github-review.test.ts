@@ -35,6 +35,7 @@ class ReviewCodex implements AgentAdapter {
       }),
       rawOutput: '',
       truncated: false,
+      usage: null,
       error: null,
       durationMs: 10,
     };
@@ -58,6 +59,7 @@ class NoChangeCodex extends ReviewCodex {
       }),
       rawOutput: '',
       truncated: false,
+      usage: null,
       error: null,
       durationMs: 10,
     };
@@ -73,6 +75,7 @@ class InvalidResultCodex extends ReviewCodex {
       output: 'kein JSON',
       rawOutput: '',
       truncated: false,
+      usage: null,
       error: null,
       durationMs: 10,
     };
@@ -102,6 +105,7 @@ class CancelableCodex implements AgentAdapter {
       output: '',
       rawOutput: '',
       truncated: false,
+      usage: null,
       error: 'Lauf wurde abgebrochen',
       durationMs: 10,
     });

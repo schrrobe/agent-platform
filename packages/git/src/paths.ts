@@ -52,20 +52,35 @@ export function branchForIdentifier(identifier: string, kind: BranchKind = 'feat
   return `${kind}/${identifierToSlug(identifier)}`;
 }
 
+/** Erzeugt aus einem Ticket-Titel einen kurzen, Git-sicheren und lesbaren Slug. */
+export function ticketTitleToSlug(title: string): string {
+  const slug = title
+    .trim()
+    .normalize('NFKD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .replaceAll('ß', 'ss')
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+    .slice(0, 72)
+    .replace(/-+$/g, '');
+  return slug || 'ticket';
+}
+
+export function branchForTicket(
+  identifier: string,
+  title: string,
+  kind: BranchKind = 'feature',
+): string {
+  return `${branchForIdentifier(identifier, kind)}/${ticketTitleToSlug(title)}`;
+}
+
 export function jobSuffix(jobId: string): string {
   const normalized = jobId.trim().toLowerCase();
   if (!/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/.test(normalized)) {
     throw new PathValidationError(`Ungültige Job-ID für Git-Pfad: ${jobId}`);
   }
   return normalized.replaceAll('-', '');
-}
-
-export function branchForJob(
-  identifier: string,
-  jobId: string,
-  kind: BranchKind = 'feature',
-): string {
-  return `${kind}/${identifierToSlug(identifier)}/${jobSuffix(jobId)}`;
 }
 
 /**

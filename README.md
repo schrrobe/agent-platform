@@ -169,6 +169,8 @@ ungültigen Werten bricht der Orchestrator mit einer verständlichen Meldung ab.
 | `LINEAR_WRITE_COMMENTS`          | `false`                  | Wenn `true`, darf ein Abschlusskommentar nach Linear geschrieben werden |
 | `REPO_ROOT` / `WORKTREE_ROOT`    | –                        | Vorschlagswerte für neue Projekte                                       |
 | `BASE_BRANCH`                    | `main`                   | Standard-Basisbranch                                                    |
+| `GIT_AUTHOR_NAME`                | `Robert Schreiner`       | Autor und Committer automatischer Git-Commits                           |
+| `GIT_AUTHOR_EMAIL`               | `robsch@stagedates.com`  | E-Mail für Autor und Committer automatischer Git-Commits                |
 | `CLAUDE_BIN` / `CODEX_BIN`       | `claude` / `codex`       | Pfad/Name der CLIs                                                      |
 | `SRT_BIN`                        | `srt`                    | Sandbox-Runtime für Projektbefehle                                      |
 | `CLAUDE_MODEL` / `CODEX_MODEL`   | `opus` / `gpt-5.6-sol`   | Modell-Overrides; leer verwendet den jeweiligen CLI-Default             |
@@ -189,13 +191,20 @@ Projektbezogene Policies werden im Dashboard gespeichert:
 - **Diff-Grenzen**: maximale Dateianzahl, maximale Bytegröße und gesperrte Pfadpräfixe; binäre Änderungen eskalieren immer zur Sichtprüfung.
 - **Setup**: optionaler, idempotenter Offline-Befehl wie `pnpm install --offline --frozen-lockfile`. Er läuft in derselben Sandbox wie die Checks.
 
+Neue Job-Branches enthalten Kategorie, Ticket-Identifier und einen lesbaren Titel-Slug, zum
+Beispiel `fix/web-438/iframe-rundung-korrigieren`. Nur bei einer Namenskollision wird `-2`, `-3`
+usw. ergänzt. Automatische Commits verwenden die über `GIT_AUTHOR_NAME` und
+`GIT_AUTHOR_EMAIL` konfigurierte Identität.
+
 ### Linear-API-Key
 
 Einen Personal API Key unter **Linear → Settings → Security & access → Personal API keys**
-erstellen und als `LINEAR_API_KEY` setzen. Standardmäßig wird er nur für lesende Abfragen
-(`issue(...)`) verwendet; mit `LINEAR_WRITE_COMMENTS=true` zusätzlich für den ausdrücklich
-aktivierten Handoff-Kommentar. Er wird **niemals an Kindprozesse
-(Claude/Codex/Testbefehle) weitergegeben**. Import per Identifier, z. B. `APP-123`.
+erstellen und als `LINEAR_API_KEY` setzen. Ticketbeschreibungen werden nur durch die explizite
+Aktion **„In Linear speichern“** in der Detailansicht geändert; Status und andere Ticketfelder
+bleiben unverändert. Mit `LINEAR_WRITE_COMMENTS=true` wird zusätzlich der ausdrücklich
+aktivierte Handoff-Kommentar geschrieben. Der Key wird **niemals an Kindprozesse
+(Claude/Codex/Testbefehle) weitergegeben**. Beim Import können bis zu 100 Identifier gemeinsam
+einem Projekt zugeordnet werden, z. B. `APP-123`, `APP-124` und `WEB-42`.
 
 ### Claude-Code- und Codex-Konfiguration
 

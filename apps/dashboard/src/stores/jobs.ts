@@ -28,6 +28,12 @@ export const useJobsStore = defineStore('jobs', () => {
     jobsById.value = { ...jobsById.value, [job.id]: job };
   }
 
+  function remove(jobId: string): void {
+    const next = { ...jobsById.value };
+    delete next[jobId];
+    jobsById.value = next;
+  }
+
   async function load(): Promise<void> {
     loading.value = true;
     error.value = null;
@@ -58,10 +64,13 @@ export const useJobsStore = defineStore('jobs', () => {
       case 'job.failed':
         upsert(envelope.payload.job);
         break;
+      case 'job.deleted':
+        remove(envelope.payload.jobId);
+        break;
       default:
         break;
     }
   }
 
-  return { jobsById, jobs, byState, loading, error, load, upsert, applyEnvelope };
+  return { jobsById, jobs, byState, loading, error, load, upsert, remove, applyEnvelope };
 });

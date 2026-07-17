@@ -16,6 +16,21 @@ export interface AgentExecutionInput {
   onSpawned?: (pgid: number | undefined) => void;
 }
 
+/**
+ * Token-Verbrauch eines Agenten-Laufs. Nur Agenten mit maschinenlesbarer
+ * Usage-Ausgabe (Claude Code JSON) liefern Werte; sonst bleibt das Feld `null`.
+ */
+export interface AgentUsage {
+  inputTokens: number;
+  outputTokens: number;
+  cacheReadTokens: number;
+  cacheCreationTokens: number;
+  /** Summe aller Ein-/Ausgabe-Tokens inkl. Cache. */
+  totalTokens: number;
+  /** Kosten in USD, falls die CLI sie meldet — sonst `null`. */
+  costUsd: number | null;
+}
+
 export interface AgentExecutionResult {
   status: 'completed' | 'failed' | 'timeout' | 'canceled';
   exitCode: number | null;
@@ -25,6 +40,8 @@ export interface AgentExecutionResult {
   rawOutput: string;
   /** Ausgabe wurde am konfigurierten Größenlimit gekappt. */
   truncated: boolean;
+  /** Token-Verbrauch, falls der Agent ihn meldet — sonst `null`. */
+  usage: AgentUsage | null;
   error: string | null;
   durationMs: number;
 }
