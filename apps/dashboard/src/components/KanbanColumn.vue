@@ -6,7 +6,7 @@ import { canDropTo } from '@/lib/board';
 import { useDropTarget, type CardDragData } from '@/composables/dnd';
 import TicketCard from './TicketCard.vue';
 
-const props = defineProps<{ column: ColumnDef; jobs: JobSummary[] }>();
+const props = defineProps<{ column: ColumnDef; jobs: JobSummary[]; showState?: boolean }>();
 const emit = defineEmits<{ move: [jobId: string, to: JobState]; open: [jobId: string] }>();
 
 const columnRef = ref<HTMLElement | null>(null);
@@ -14,8 +14,11 @@ const over = ref(false);
 const allowed = ref(false);
 
 useDropTarget(columnRef, {
-  canDrop: (data: CardDragData) => canDropTo(data.from, props.column.state),
-  onDrop: (data: CardDragData) => emit('move', data.jobId, props.column.state),
+  canDrop: (data: CardDragData) =>
+    props.column.dropTarget !== undefined && canDropTo(data.from, props.column.dropTarget),
+  onDrop: (data: CardDragData) => {
+    if (props.column.dropTarget !== undefined) emit('move', data.jobId, props.column.dropTarget);
+  },
   onOverChange: (isOver, isAllowed) => {
     over.value = isOver;
     allowed.value = isAllowed;
@@ -36,7 +39,13 @@ useDropTarget(columnRef, {
       <span class="count">{{ jobs.length }}</span>
     </header>
     <div class="cards">
-      <TicketCard v-for="job in jobs" :key="job.id" :job="job" @open="emit('open', $event)" />
+      <TicketCard
+        v-for="job in jobs"
+        :key="job.id"
+        :job="job"
+        :show-state="showState"
+        @open="emit('open', $event)"
+      />
       <p v-if="jobs.length === 0" class="empty faint">—</p>
     </div>
   </section>

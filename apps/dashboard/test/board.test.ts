@@ -3,24 +3,33 @@ import { JOB_STATES } from '@agent/shared';
 import { COLUMNS, canDropTo, isManualStartTarget } from '@/lib/board';
 
 describe('Board-Spalten', () => {
-  it('bilden alle Zustände in fester Reihenfolge ab', () => {
-    expect(COLUMNS).toHaveLength(JOB_STATES.length);
-    expect(COLUMNS.map((c) => c.state)).toEqual([
+  it('haben feste Reihenfolge mit gemergter In-Arbeit-Spalte', () => {
+    expect(COLUMNS.map((c) => c.key)).toEqual([
       'inbox',
       'agent_ready',
-      'preflight',
-      'planning',
+      'in_progress',
       'awaiting_plan_approval',
-      'implementing',
-      'testing',
-      'review',
-      'rework',
       'needs_human',
       'ready_for_human',
       'done',
       'failed',
       'paused',
     ]);
+  });
+
+  it('decken jeden Zustand genau einmal ab', () => {
+    const covered = COLUMNS.flatMap((c) => c.states);
+    expect([...covered].sort()).toEqual([...JOB_STATES].sort());
+  });
+
+  it('ist die Merged-Spalte kein Drop-Ziel, Single-State-Spalten schon', () => {
+    for (const column of COLUMNS) {
+      if (column.states.length > 1) {
+        expect(column.dropTarget, column.key).toBeUndefined();
+      } else {
+        expect(column.dropTarget, column.key).toBe(column.states[0]);
+      }
+    }
   });
 });
 

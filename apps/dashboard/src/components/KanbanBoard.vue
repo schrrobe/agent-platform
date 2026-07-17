@@ -13,9 +13,10 @@ const jobs = useJobsStore();
   <div class="board scroll-x">
     <KanbanColumn
       v-for="column in COLUMNS"
-      :key="column.state"
+      :key="column.key"
       :column="column"
-      :jobs="jobs.byState[column.state]"
+      :jobs="column.states.flatMap((state) => jobs.byState[state])"
+      :show-state="column.states.length > 1"
       @move="(id, to) => emit('move', id, to)"
       @open="emit('open', $event)"
     />

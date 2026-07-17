@@ -1,11 +1,13 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue';
 import type { JobSummary } from '@agent/shared';
+import { isActiveState } from '@agent/shared';
 import { useDraggableCard } from '@/composables/dnd';
 import { formatDuration, relativeTime, runtimeMs } from '@/lib/format';
 import { useClock } from '@/composables/clock';
+import StatusBadge from '@/components/StatusBadge.vue';
 
-const props = defineProps<{ job: JobSummary }>();
+const props = defineProps<{ job: JobSummary; showState?: boolean }>();
 const emit = defineEmits<{ open: [jobId: string] }>();
 
 const cardRef = ref<HTMLElement | null>(null);
@@ -17,11 +19,7 @@ useDraggableCard(
 );
 
 const now = useClock();
-const isActive = computed(() =>
-  ['preflight', 'planning', 'implementing', 'testing', 'review', 'rework'].includes(
-    props.job.state,
-  ),
-);
+const isActive = computed(() => isActiveState(props.job.state));
 const runtime = computed(() =>
   formatDuration(runtimeMs(props.job.startedAt, props.job.finishedAt, now.value)),
 );
@@ -36,6 +34,7 @@ const runtime = computed(() =>
   >
     <header>
       <span class="identifier">{{ job.ticket.identifier }}</span>
+      <StatusBadge v-if="showState" :state="job.state" />
       <span v-if="job.reviewLoopCount > 0" class="loops" title="Review-Schleifen">
         ↻ {{ job.reviewLoopCount }}
       </span>

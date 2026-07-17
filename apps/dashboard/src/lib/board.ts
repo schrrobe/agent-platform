@@ -2,35 +2,35 @@ import type { JobState } from '@agent/shared';
 import { MANUAL_TRANSITIONS, isActiveState } from '@agent/shared';
 
 export interface ColumnDef {
-  state: JobState;
+  key: string;
   label: string;
   accent: string;
+  /** Zustände, deren Karten in dieser Spalte landen. */
+  states: JobState[];
+  /** Ziel-Zustand bei Drop; fehlt → Spalte ist nie Drop-Ziel. */
+  dropTarget?: JobState;
+}
+
+function single(state: JobState, label: string, accent: string): ColumnDef {
+  return { key: state, label, accent, states: [state], dropTarget: state };
 }
 
 /** Reihenfolge und Beschriftung der Kanban-Spalten (Spezifikation). */
 export const COLUMNS: ColumnDef[] = [
-  { state: 'inbox', label: 'Inbox', accent: 'var(--c-inbox)' },
-  { state: 'agent_ready', label: 'Agent Ready', accent: 'var(--c-ready)' },
-  { state: 'preflight', label: 'Preflight', accent: 'var(--c-active)' },
-  { state: 'planning', label: 'Planning', accent: 'var(--c-active)' },
+  single('inbox', 'Inbox', 'var(--c-inbox)'),
+  single('agent_ready', 'Agent Ready', 'var(--c-ready)'),
   {
-    state: 'awaiting_plan_approval',
-    label: 'Planfreigabe',
-    accent: 'var(--c-human)',
+    key: 'in_progress',
+    label: 'In Arbeit',
+    accent: 'var(--c-active)',
+    states: ['preflight', 'planning', 'implementing', 'testing', 'review', 'rework'],
   },
-  { state: 'implementing', label: 'Implementing', accent: 'var(--c-active)' },
-  { state: 'testing', label: 'Testing', accent: 'var(--c-active)' },
-  { state: 'review', label: 'Review', accent: 'var(--c-active)' },
-  { state: 'rework', label: 'Rework', accent: 'var(--c-warn)' },
-  { state: 'needs_human', label: 'Needs Human', accent: 'var(--c-human)' },
-  {
-    state: 'ready_for_human',
-    label: 'Ready for Human',
-    accent: 'var(--c-done)',
-  },
-  { state: 'done', label: 'Done', accent: 'var(--c-done)' },
-  { state: 'failed', label: 'Failed', accent: 'var(--c-fail)' },
-  { state: 'paused', label: 'Paused', accent: 'var(--c-paused)' },
+  single('awaiting_plan_approval', 'Planfreigabe', 'var(--c-human)'),
+  single('needs_human', 'Needs Human', 'var(--c-human)'),
+  single('ready_for_human', 'Ready for Human', 'var(--c-done)'),
+  single('done', 'Done', 'var(--c-done)'),
+  single('failed', 'Failed', 'var(--c-fail)'),
+  single('paused', 'Paused', 'var(--c-paused)'),
 ];
 
 /**
