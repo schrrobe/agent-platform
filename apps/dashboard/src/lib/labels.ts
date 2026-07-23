@@ -8,6 +8,7 @@ export const STATE_LABELS: Record<JobState, string> = {
   awaiting_plan_approval: 'Planfreigabe',
   implementing: 'Implementing',
   testing: 'Testing',
+  awaiting_diff_approval: 'Diff-Freigabe',
   review: 'Review',
   rework: 'Rework',
   needs_human: 'Needs Human',
@@ -15,6 +16,12 @@ export const STATE_LABELS: Record<JobState, string> = {
   done: 'Done',
   failed: 'Failed',
   paused: 'Paused',
+};
+
+export const PRIORITY_LABELS: Record<number, string> = {
+  1: 'Hoch',
+  0: 'Normal',
+  [-1]: 'Niedrig',
 };
 
 export const STATE_COLORS: Record<JobState, string> = {
@@ -25,6 +32,7 @@ export const STATE_COLORS: Record<JobState, string> = {
   awaiting_plan_approval: 'var(--c-human)',
   implementing: 'var(--c-active)',
   testing: 'var(--c-active)',
+  awaiting_diff_approval: 'var(--c-human)',
   review: 'var(--c-active)',
   rework: 'var(--c-warn)',
   needs_human: 'var(--c-human)',

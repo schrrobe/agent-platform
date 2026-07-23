@@ -1,4 +1,10 @@
-import type { AutonomyMode, Project, ProjectCommands, TestExecutionMode } from '@agent/shared';
+import type {
+  AutonomyMode,
+  LinearStateSyncConfig,
+  Project,
+  ProjectCommands,
+  TestExecutionMode,
+} from '@agent/shared';
 import type { AppDatabase } from '../db.js';
 import { newId, nowIso, parseJson, toBool, toInt } from '../util.js';
 
@@ -15,6 +21,7 @@ export interface ProjectRow {
   max_changed_files: number;
   max_diff_bytes: number;
   blocked_paths_json: string;
+  linear_state_sync_json: string;
   active: number;
   created_at: string;
   updated_at: string;
@@ -34,6 +41,7 @@ export function mapProject(row: ProjectRow): Project {
     maxChangedFiles: row.max_changed_files,
     maxDiffBytes: row.max_diff_bytes,
     blockedPaths: parseJson<string[]>(row.blocked_paths_json, []),
+    linearStateSync: parseJson<LinearStateSyncConfig | null>(row.linear_state_sync_json, null),
     active: toBool(row.active),
     createdAt: row.created_at,
     updatedAt: row.updated_at,
@@ -52,6 +60,7 @@ export interface ProjectCreate {
   maxChangedFiles: number;
   maxDiffBytes: number;
   blockedPaths: string[];
+  linearStateSync: LinearStateSyncConfig | null;
   active: boolean;
 }
 
@@ -68,8 +77,8 @@ export class ProjectsRepository {
         `INSERT INTO projects
           (id, name, repository_path, base_branch, worktree_root, commands_json,
            autonomy_mode, test_execution_mode, baseline_checks, max_changed_files,
-           max_diff_bytes, blocked_paths_json, active, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+           max_diff_bytes, blocked_paths_json, linear_state_sync_json, active, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       )
       .run(
         id,
@@ -84,6 +93,7 @@ export class ProjectsRepository {
         input.maxChangedFiles,
         input.maxDiffBytes,
         JSON.stringify(input.blockedPaths),
+        JSON.stringify(input.linearStateSync),
         toInt(input.active),
         now,
         now,
@@ -108,14 +118,16 @@ export class ProjectsRepository {
       maxChangedFiles: patch.maxChangedFiles ?? current.maxChangedFiles,
       maxDiffBytes: patch.maxDiffBytes ?? current.maxDiffBytes,
       blockedPaths: patch.blockedPaths ?? current.blockedPaths,
+      linearStateSync:
+        patch.linearStateSync !== undefined ? patch.linearStateSync : current.linearStateSync,
       active: patch.active ?? current.active,
     };
     this.db
       .prepare(
         `UPDATE projects SET name = ?, repository_path = ?, base_branch = ?, worktree_root = ?,
           commands_json = ?, autonomy_mode = ?, test_execution_mode = ?, baseline_checks = ?,
-          max_changed_files = ?, max_diff_bytes = ?, blocked_paths_json = ?, active = ?,
-          updated_at = ? WHERE id = ?`,
+          max_changed_files = ?, max_diff_bytes = ?, blocked_paths_json = ?,
+          linear_state_sync_json = ?, active = ?, updated_at = ? WHERE id = ?`,
       )
       .run(
         merged.name,
@@ -129,6 +141,7 @@ export class ProjectsRepository {
         merged.maxChangedFiles,
         merged.maxDiffBytes,
         JSON.stringify(merged.blockedPaths),
+        JSON.stringify(merged.linearStateSync),
         toInt(merged.active),
         nowIso(),
         id,

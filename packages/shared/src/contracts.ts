@@ -160,3 +160,16 @@ export const REVIEW_RESULT_JSON_SCHEMA = {
     openAcceptanceCriteria: stringArrayJsonSchema,
   },
 } as const;
+
+export const IMPLEMENTATION_RESULT_JSON_SCHEMA = {
+  type: 'object',
+  additionalProperties: false,
+  required: ['version', 'summary', 'changedFiles', 'planDeviations', 'testsRun'],
+  properties: {
+    version: { const: 1 },
+    summary: { type: 'string', minLength: 1 },
+    changedFiles: stringArrayJsonSchema,
+    planDeviations: stringArrayJsonSchema,
+    testsRun: stringArrayJsonSchema,
+  },
+} as const;

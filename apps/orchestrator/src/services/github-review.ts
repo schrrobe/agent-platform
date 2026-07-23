@@ -114,6 +114,11 @@ export class GithubReviewService {
     if (!project || !ticket) {
       throw new GithubReviewServiceError('NOT_FOUND', 'Projekt- oder Ticketdaten fehlen');
     }
+    // Alle Tickets des Vorgangs (primär zuerst) für den Review-Prompt.
+    const tickets = this.deps.repos.jobs
+      .listTicketIdsForJob(job.id)
+      .map((id) => this.deps.repos.tickets.get(id))
+      .filter((t): t is NonNullable<typeof t> => t != null);
 
     this.deps.git.verifyOwner(job.worktreePath, {
       jobId: job.id,
@@ -155,7 +160,7 @@ export class GithubReviewService {
     let changesFinalized = false;
     try {
       const prompt = buildGithubReviewPrompt({
-        ticket,
+        tickets,
         pullRequestUrl: pullRequest.url,
         threads: openThreads.map(({ isResolved: _isResolved, ...thread }) => thread),
       });

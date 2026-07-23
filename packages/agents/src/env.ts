@@ -42,7 +42,10 @@ export function buildClaudeEnv(source: NodeJS.ProcessEnv = process.env): Record<
 
 export function buildCodexEnv(source: NodeJS.ProcessEnv = process.env): Record<string, string> {
   const env = runtimeEnv(source);
-  copy(source, env, ['HOME', 'OPENAI_API_KEY', 'CODEX_HOME']);
+  // OPENAI_BASE_URL leitet Codex-API-Verkehr über einen optionalen Proxy (z. B.
+  // Headroom-Kompression) — analog zu ANTHROPIC_BASE_URL bei Claude. Kein Zwang;
+  // fehlt die Variable, spricht Codex direkt mit OpenAI.
+  copy(source, env, ['HOME', 'OPENAI_API_KEY', 'OPENAI_BASE_URL', 'CODEX_HOME']);
   return env;
 }
 

@@ -44,6 +44,16 @@ export const blockedPathSchema = z
     error: 'Gesperrte Pfade müssen relative Repository-Pfade ohne .. sein',
   });
 
+export const linearStateSyncSchema = z
+  .object({
+    teamKey: z.string().trim().min(1).max(50),
+    onStart: z.string().trim().min(1).max(100).nullable().default(null),
+    onReadyForHuman: z.string().trim().min(1).max(100).nullable().default(null),
+    onDone: z.string().trim().min(1).max(100).nullable().default(null),
+  })
+  .strict();
+export type LinearStateSyncInput = z.infer<typeof linearStateSyncSchema>;
+
 const projectPolicyShape = {
   autonomyMode: z.enum(AUTONOMY_MODES).default('approve_plan'),
   testExecutionMode: z.enum(TEST_EXECUTION_MODES).default('sandboxed'),
@@ -66,6 +76,7 @@ export const projectCreateSchema = z
     worktreeRoot: z.string().trim().min(1).max(1024),
     commands: projectCommandsSchema.default({}),
     ...projectPolicyShape,
+    linearStateSync: linearStateSyncSchema.nullable().default(null),
     active: z.boolean().default(true),
   })
   .strict();
@@ -88,6 +99,7 @@ export const projectUpdateSchema = z
       .max(100 * 1024 * 1024)
       .optional(),
     blockedPaths: z.array(blockedPathSchema).max(200).optional(),
+    linearStateSync: linearStateSyncSchema.nullable().optional(),
     active: z.boolean().optional(),
   })
   .strict();
@@ -103,6 +115,20 @@ export const bulkImportRequestSchema = z
   .object({
     identifiers: z.array(identifierSchema).min(1).max(100),
     projectId: z.uuid(),
+  })
+  .strict();
+
+export const groupJobsSchema = z
+  .object({
+    /** Zu einem Vorgang zusammenzuführende Jobs (≥2). */
+    jobIds: z.array(z.uuid()).min(2).max(20),
+  })
+  .strict();
+
+export const ungroupSchema = z
+  .object({
+    /** Sekundäres Ticket, das wieder als eigener Job herausgelöst wird. */
+    ticketId: z.uuid(),
   })
   .strict();
 
@@ -124,6 +150,37 @@ export const planApprovalSchema = z
   })
   .strict();
 
+export const diffApprovalSchema = z
+  .object({
+    note: z.string().trim().max(20_000).optional().default(''),
+  })
+  .strict();
+
+export const requestChangesSchema = z
+  .object({
+    note: z.string().trim().min(1).max(20_000),
+  })
+  .strict();
+
+export const retryBodySchema = z
+  .object({
+    note: z.string().trim().max(20_000).optional().default(''),
+  })
+  .strict();
+
+export const jobPriorityPatchSchema = z
+  .object({
+    priority: z.number().int().min(-1).max(1),
+  })
+  .strict();
+
+export const queuePositionPatchSchema = z
+  .object({
+    /** Job, hinter dem eingeordnet wird; null = an den Anfang. */
+    afterJobId: z.string().min(1).nullable(),
+  })
+  .strict();
+
 export const jobCleanupSchema = z
   .object({
     removeWorktree: z.boolean().default(false),
@@ -139,6 +196,19 @@ export const assignedIssuesQuerySchema = z.object({
   limit: z.coerce.number().int().min(1).max(100).default(50),
 });
 
+export const teamStatesQuerySchema = z.object({
+  teamKey: z.string().trim().min(1).max(50),
+});
+
+export const worktreeRemoveSchema = z
+  .object({
+    projectId: z.string().min(1),
+    path: z.string().min(1),
+    jobId: z.string().min(1).nullable().optional(),
+  })
+  .strict();
+export type WorktreeRemoveInput = z.infer<typeof worktreeRemoveSchema>;
+
 export type ProjectCreateInput = z.infer<typeof projectCreateSchema>;
 export type ProjectUpdateInput = z.infer<typeof projectUpdateSchema>;
 export type ImportRequestInput = z.infer<typeof importRequestSchema>;
@@ -146,4 +216,9 @@ export type BulkImportRequestInput = z.infer<typeof bulkImportRequestSchema>;
 export type TicketDescriptionUpdateInput = z.infer<typeof ticketDescriptionUpdateSchema>;
 export type StatePatchInput = z.infer<typeof statePatchSchema>;
 export type PlanApprovalInput = z.infer<typeof planApprovalSchema>;
+export type DiffApprovalInput = z.infer<typeof diffApprovalSchema>;
+export type RequestChangesInput = z.infer<typeof requestChangesSchema>;
+export type RetryBodyInput = z.infer<typeof retryBodySchema>;
+export type JobPriorityPatchInput = z.infer<typeof jobPriorityPatchSchema>;
+export type QueuePositionPatchInput = z.infer<typeof queuePositionPatchSchema>;
 export type JobCleanupInput = z.infer<typeof jobCleanupSchema>;

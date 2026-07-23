@@ -26,6 +26,7 @@ export const COLUMNS: ColumnDef[] = [
     states: ['preflight', 'planning', 'implementing', 'testing', 'review', 'rework'],
   },
   single('awaiting_plan_approval', 'Planfreigabe', 'var(--c-human)'),
+  single('awaiting_diff_approval', 'Diff-Freigabe', 'var(--c-human)'),
   single('needs_human', 'Needs Human', 'var(--c-human)'),
   single('ready_for_human', 'Ready for Human', 'var(--c-done)'),
   single('done', 'Done', 'var(--c-done)'),

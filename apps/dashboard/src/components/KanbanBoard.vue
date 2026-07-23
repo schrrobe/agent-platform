@@ -4,7 +4,11 @@ import { useJobsStore } from '@/stores/jobs';
 import { COLUMNS } from '@/lib/board';
 import KanbanColumn from './KanbanColumn.vue';
 
-const emit = defineEmits<{ move: [jobId: string, to: JobState]; open: [jobId: string] }>();
+const emit = defineEmits<{
+  move: [jobId: string, to: JobState];
+  open: [jobId: string];
+  reorder: [jobId: string, afterJobId: string | null];
+}>();
 
 const jobs = useJobsStore();
 </script>
@@ -19,6 +23,7 @@ const jobs = useJobsStore();
       :show-state="column.states.length > 1"
       @move="(id, to) => emit('move', id, to)"
       @open="emit('open', $event)"
+      @reorder="(id, afterId) => emit('reorder', id, afterId)"
     />
   </div>
 </template>

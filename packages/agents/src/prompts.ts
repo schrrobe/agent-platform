@@ -43,8 +43,24 @@ export function ticketBlock(ticket: Ticket): string {
   );
 }
 
+/**
+ * Rendert alle Tickets eines Jobs. Ein Vorgang (mehrere Tickets) wird mit einer
+ * Kopfzeile eingeleitet; bei genau einem Ticket ist die Ausgabe identisch zu
+ * `ticketBlock`.
+ */
+export function ticketBlocks(tickets: Ticket[]): string {
+  const blocks = tickets.map(ticketBlock).join('\n\n');
+  if (tickets.length <= 1) return blocks;
+  return [
+    `Dieser Vorgang umfasst ${tickets.length} zusammengehörige Tickets.`,
+    'Setze ALLE Tickets gemeinsam in einer kohärenten Implementierung um.',
+    '',
+    blocks,
+  ].join('\n');
+}
+
 export function buildPlanPrompt(input: {
-  ticket: Ticket;
+  tickets: Ticket[];
   baseBranch: string;
   baselineReport?: string | null;
 }): string {
@@ -68,7 +84,7 @@ export function buildPlanPrompt(input: {
     '- Bei fehlendem Kontext konkrete Fragen ausgeben. Sicherheits-, Auth-, Migrations-, CI- oder',
     '  großflächige Änderungen als high einstufen.',
     '',
-    ticketBlock(input.ticket),
+    ticketBlocks(input.tickets),
     ...(input.baselineReport
       ? ['', wrapUntrusted('BASELINE-PRÜFUNGEN', input.baselineReport)]
       : []),
@@ -76,10 +92,11 @@ export function buildPlanPrompt(input: {
 }
 
 export function buildImplementPrompt(input: {
-  ticket: Ticket;
+  tickets: Ticket[];
   plan: string;
   isRework: boolean;
   approvalNote?: string | null;
+  humanFeedback?: string | null;
   reviewFeedback?: string | null;
   testFeedback?: string | null;
 }): string {
@@ -90,6 +107,13 @@ export function buildImplementPrompt(input: {
     input.isRework
       ? 'Dies ist eine NACHARBEIT: Behebe gezielt das unten übergebene Review-/Testfeedback.'
       : 'Setze den unten übergebenen, freigegebenen Plan vollständig um.',
+    ...(input.humanFeedback?.trim()
+      ? [
+          '',
+          'Ein Mensch hat konkrete Änderungswünsche hinterlegt (Abschnitt MENSCHLICHE',
+          'ÄNDERUNGSWÜNSCHE unten) — setze diese vorrangig um.',
+        ]
+      : []),
     '',
     'Verbindliche Regeln:',
     '- Ändere Dateien ausschließlich innerhalb dieses Arbeitsverzeichnisses.',
@@ -105,12 +129,15 @@ export function buildImplementPrompt(input: {
     '"testsRun":["..."]}',
     'Leere Listen sind erlaubt. Die tatsächlichen Git-Dateien prüft der Orchestrator separat.',
     '',
-    ticketBlock(input.ticket),
+    ticketBlocks(input.tickets),
     '',
     wrapUntrusted('FREIGEGEBENER PLAN', input.plan),
   ];
   if (input.approvalNote?.trim()) {
     lines.push('', wrapUntrusted('MENSCHLICHE FREIGABE/ANTWORTEN', input.approvalNote));
+  }
+  if (input.humanFeedback?.trim()) {
+    lines.push('', wrapUntrusted('MENSCHLICHE ÄNDERUNGSWÜNSCHE', input.humanFeedback));
   }
   if (input.reviewFeedback?.trim()) {
     lines.push('', wrapUntrusted('LETZTES REVIEW', input.reviewFeedback));
@@ -122,7 +149,7 @@ export function buildImplementPrompt(input: {
 }
 
 export function buildReviewPrompt(input: {
-  ticket: Ticket;
+  tickets: Ticket[];
   plan: string;
   diff: string;
   changedFiles: string;
@@ -145,7 +172,7 @@ export function buildReviewPrompt(input: {
     'ein Finding oder ein offenes Akzeptanzkriterium.',
     `Dies ist Review-Iteration ${input.iteration}.`,
     '',
-    ticketBlock(input.ticket),
+    ticketBlocks(input.tickets),
     '',
     wrapUntrusted('PLAN.MD', input.plan),
     '',
@@ -172,7 +199,7 @@ export function buildReworkFeedback(input: {
 }
 
 export function buildGithubReviewPrompt(input: {
-  ticket: Ticket;
+  tickets: Ticket[];
   pullRequestUrl: string;
   threads: GithubReviewThreadData[];
 }): string {
@@ -198,7 +225,7 @@ export function buildGithubReviewPrompt(input: {
     '"unaddressed":[{"threadId":"...","reason":"..."}],"changedFiles":["..."],',
     '"testsRun":["..."]}',
     '',
-    ticketBlock(input.ticket),
+    ticketBlocks(input.tickets),
     '',
     wrapUntrusted('PULL-REQUEST-URL', input.pullRequestUrl),
     '',

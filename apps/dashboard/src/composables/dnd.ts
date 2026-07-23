@@ -3,7 +3,14 @@ import {
   draggable,
   dropTargetForElements,
 } from '@atlaskit/pragmatic-drag-and-drop/element/adapter';
+import {
+  attachClosestEdge,
+  extractClosestEdge,
+  type Edge,
+} from '@atlaskit/pragmatic-drag-and-drop-hitbox/closest-edge';
 import type { JobState } from '@agent/shared';
+
+export type { Edge };
 
 export interface CardDragData {
   jobId: string;
@@ -52,6 +59,46 @@ export function useDropTarget(
         options.onOverChange?.(false, false);
         const data = source.data as CardDragData;
         if (options.canDrop(data)) options.onDrop(data);
+      },
+    });
+  });
+  onBeforeUnmount(() => cleanup?.());
+}
+
+/**
+ * Registriert eine Karte als Reorder-Ziel: liefert die nächstgelegene Kante
+ * (oben/unten) für das manuelle Umsortieren innerhalb einer Spalte.
+ */
+export function useCardDropTarget(
+  elRef: Ref<HTMLElement | null>,
+  options: {
+    canDrop: (data: CardDragData) => boolean;
+    onDrop: (data: CardDragData, edge: Edge | null) => void;
+    onEdgeChange?: (edge: Edge | null) => void;
+  },
+): void {
+  let cleanup: (() => void) | undefined;
+  onMounted(() => {
+    if (!elRef.value) return;
+    const element = elRef.value;
+    cleanup = dropTargetForElements({
+      element,
+      getIsSticky: () => true,
+      canDrop: ({ source }) => options.canDrop(source.data as CardDragData),
+      getData: ({ input }) =>
+        attachClosestEdge({}, { element, input, allowedEdges: ['top', 'bottom'] }),
+      onDrag: ({ self, source }) => {
+        if (!options.canDrop(source.data as CardDragData)) {
+          options.onEdgeChange?.(null);
+          return;
+        }
+        options.onEdgeChange?.(extractClosestEdge(self.data));
+      },
+      onDragLeave: () => options.onEdgeChange?.(null),
+      onDrop: ({ self, source }) => {
+        options.onEdgeChange?.(null);
+        const data = source.data as CardDragData;
+        if (options.canDrop(data)) options.onDrop(data, extractClosestEdge(self.data));
       },
     });
   });

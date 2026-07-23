@@ -67,12 +67,13 @@ export function ticketTitleToSlug(title: string): string {
   return slug || 'ticket';
 }
 
+/** `feature/app-123-login-fuer-groessere-kunden` — Identifier und Titel im selben Segment. */
 export function branchForTicket(
   identifier: string,
   title: string,
   kind: BranchKind = 'feature',
 ): string {
-  return `${branchForIdentifier(identifier, kind)}/${ticketTitleToSlug(title)}`;
+  return `${branchForIdentifier(identifier, kind)}-${ticketTitleToSlug(title)}`;
 }
 
 export function jobSuffix(jobId: string): string {

@@ -27,6 +27,7 @@ onUnmounted(() => ws.disconnect());
         <RouterLink to="/stats">Statistik</RouterLink>
         <RouterLink to="/logs">Logs</RouterLink>
         <RouterLink to="/settings">Einstellungen</RouterLink>
+        <RouterLink to="/maintenance">Wartung</RouterLink>
       </nav>
       <div class="ws-status" :class="ws.status" :title="`WebSocket: ${ws.status}`">
         <span class="dot" /> {{ ws.status === 'open' ? 'live' : ws.status }}

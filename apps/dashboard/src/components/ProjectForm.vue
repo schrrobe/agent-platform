@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { reactive, computed, onMounted, ref } from 'vue';
-import type { Project, ProjectCreateInput } from '@agent/shared';
+import type { LinearWorkflowState, Project, ProjectCreateInput } from '@agent/shared';
 import { COMMAND_KEYS, SHELL_METACHAR_RE } from '@agent/shared';
 import { ApiClientError, api } from '@/api/client';
 
@@ -35,6 +35,33 @@ const form = reactive({
   } as Record<string, string>,
 });
 
+// Linear-Status-Sync
+const syncEnabled = ref(props.project?.linearStateSync != null);
+const sync = reactive({
+  teamKey: props.project?.linearStateSync?.teamKey ?? '',
+  onStart: props.project?.linearStateSync?.onStart ?? '',
+  onReadyForHuman: props.project?.linearStateSync?.onReadyForHuman ?? '',
+  onDone: props.project?.linearStateSync?.onDone ?? '',
+});
+const teamStates = ref<LinearWorkflowState[]>([]);
+const statesLoading = ref(false);
+const statesError = ref<string | null>(null);
+
+async function loadTeamStates(): Promise<void> {
+  if (!sync.teamKey.trim()) return;
+  statesLoading.value = true;
+  statesError.value = null;
+  try {
+    teamStates.value = await api.getTeamStates(sync.teamKey.trim());
+  } catch (error) {
+    statesError.value =
+      error instanceof ApiClientError ? error.message : 'States konnten nicht geladen werden.';
+    teamStates.value = [];
+  } finally {
+    statesLoading.value = false;
+  }
+}
+
 const commandErrors = computed(() =>
   COMMAND_KEYS.filter((key) => form.commands[key] && SHELL_METACHAR_RE.test(form.commands[key]!)),
 );
@@ -67,7 +94,10 @@ async function loadRepositories(): Promise<void> {
   }
 }
 
-onMounted(loadRepositories);
+onMounted(() => {
+  loadRepositories();
+  if (syncEnabled.value && sync.teamKey.trim()) loadTeamStates();
+});
 
 async function chooseDirectory(kind: 'repository' | 'worktree'): Promise<void> {
   picking.value = kind;
@@ -110,6 +140,15 @@ function submit(): void {
       .split('\n')
       .map((entry) => entry.trim())
       .filter(Boolean),
+    linearStateSync:
+      syncEnabled.value && sync.teamKey.trim()
+        ? {
+            teamKey: sync.teamKey.trim(),
+            onStart: sync.onStart || null,
+            onReadyForHuman: sync.onReadyForHuman || null,
+            onDone: sync.onDone || null,
+          }
+        : null,
     commands,
   });
 }
@@ -190,10 +229,11 @@ function submit(): void {
       <legend>Autonomie und Sicherheitsgrenzen</legend>
       <div class="grid">
         <div class="field">
-          <label>Planfreigabe</label>
+          <label>Autonomie</label>
           <select v-model="form.autonomyMode">
             <option value="approve_plan">Plan immer bestätigen</option>
             <option value="full_auto">Niedriges Risiko automatisch</option>
+            <option value="approve_diff">Diff vor Review bestätigen</option>
           </select>
         </div>
         <div class="field">
@@ -229,6 +269,56 @@ function submit(): void {
           placeholder=".github/workflows&#10;infra/production"
         />
       </div>
+    </fieldset>
+
+    <fieldset>
+      <legend>Linear-Status-Sync (optional)</legend>
+      <p class="field-hint">
+        Setzt den Workflow-State des Linear-Tickets automatisch bei Start, Übergabe und
+        Abschluss — nur für Tickets des angegebenen Teams.
+      </p>
+      <label class="check">
+        <input v-model="syncEnabled" type="checkbox" style="width: auto" />
+        Status-Sync für dieses Projekt aktivieren
+      </label>
+      <template v-if="syncEnabled">
+        <div class="field">
+          <label>Team-Key (z. B. APP)</label>
+          <div class="path-control">
+            <input v-model="sync.teamKey" placeholder="APP" />
+            <button type="button" :disabled="!sync.teamKey.trim() || statesLoading" @click="loadTeamStates">
+              {{ statesLoading ? 'Lade…' : 'States laden' }}
+            </button>
+          </div>
+        </div>
+        <p v-if="statesError" class="warn">{{ statesError }}</p>
+        <div v-if="teamStates.length" class="grid">
+          <div class="field">
+            <label>Bei Start</label>
+            <select v-model="sync.onStart">
+              <option value="">— nicht ändern —</option>
+              <option v-for="s in teamStates" :key="s.id" :value="s.id">{{ s.name }}</option>
+            </select>
+          </div>
+          <div class="field">
+            <label>Bei Übergabe</label>
+            <select v-model="sync.onReadyForHuman">
+              <option value="">— nicht ändern —</option>
+              <option v-for="s in teamStates" :key="s.id" :value="s.id">{{ s.name }}</option>
+            </select>
+          </div>
+          <div class="field">
+            <label>Bei Abschluss</label>
+            <select v-model="sync.onDone">
+              <option value="">— nicht ändern —</option>
+              <option v-for="s in teamStates" :key="s.id" :value="s.id">{{ s.name }}</option>
+            </select>
+          </div>
+        </div>
+        <p v-else-if="!statesLoading && sync.teamKey.trim()" class="field-hint">
+          „States laden", um die Ziel-Zustände auszuwählen.
+        </p>
+      </template>
     </fieldset>
 
     <fieldset>

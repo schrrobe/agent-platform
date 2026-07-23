@@ -3,6 +3,7 @@ import { ZodError, type ZodType } from 'zod';
 import type { ApiErrorCode } from '@agent/shared';
 import { InvalidTransitionError } from '@agent/workflow';
 import { JobServiceError } from '../services/job-service.js';
+import { MaintenanceError } from '../services/maintenance-service.js';
 import { LinearError } from '@agent/linear';
 import { GitConflictError } from '@agent/git';
 import { GithubReviewServiceError } from '../services/github-review.js';
@@ -95,6 +96,12 @@ export function registerErrorHandler(app: {
           message: error.message,
         },
       });
+      return;
+    }
+    if (error instanceof MaintenanceError) {
+      reply
+        .code(error.code === 'NOT_FOUND' ? 404 : 409)
+        .send({ error: { code: error.code, message: error.message } });
       return;
     }
     if (error instanceof GitConflictError) {

@@ -21,6 +21,7 @@ function seedProject(repos: Repositories) {
     maxChangedFiles: 100,
     maxDiffBytes: 1024 * 1024,
     blockedPaths: [],
+    linearStateSync: null,
     active: true,
   });
 }
@@ -432,6 +433,124 @@ describe('Repositories', () => {
     expect(repos.tickets.get(ticket.id)).toBeDefined();
     expect(repos.jobs.deleteWithRelations(second.id).ticketDeleted).toBe(true);
     expect(repos.tickets.get(ticket.id)).toBeUndefined();
+  });
+
+  it('Vorgang: mergeInboxJobs bündelt Tickets, entfernt absorbierte Jobs, behält Tickets', () => {
+    const project = seedProject(repos);
+    const jobs = [1, 2, 3].map((n) => {
+      const ticket = repos.tickets.upsert({
+        projectId: project.id,
+        linearIssueId: `lin-uuid-${n}`,
+        identifier: `APP-${n}`,
+        title: `Ticket ${n}`,
+        description: `Beschreibung ${n}`,
+        url: `https://linear.app/demo/issue/APP-${n}`,
+        teamKey: 'APP',
+        teamName: 'App-Team',
+        priority: 2,
+        priorityLabel: 'High',
+        labels: [],
+        linearState: 'Todo',
+        linearCreatedAt: '2026-07-01T10:00:00.000Z',
+        linearUpdatedAt: '2026-07-02T10:00:00.000Z',
+      });
+      return repos.jobs.insert({ ticketId: ticket.id, projectId: project.id, baseBranch: 'main' });
+    });
+    const [survivor, a, b] = jobs;
+
+    repos.jobs.mergeInboxJobs(survivor.id, [a.id, b.id]);
+
+    // Absorbierte Jobs weg, Survivor bleibt.
+    expect(repos.jobs.get(a.id)).toBeUndefined();
+    expect(repos.jobs.get(b.id)).toBeUndefined();
+    expect(repos.jobs.get(survivor.id)).toBeDefined();
+
+    // Tickets bleiben erhalten und sind nun sekundäre Tickets des Survivors.
+    const summary = repos.jobs.getSummary(survivor.id);
+    expect(summary?.ticket.identifier).toBe('APP-1');
+    expect(summary?.additionalTickets.map((t) => t.identifier)).toEqual(['APP-2', 'APP-3']);
+    expect(repos.jobs.listTicketIdsForJob(survivor.id)).toHaveLength(3);
+    expect(repos.tickets.list()).toHaveLength(3);
+
+    // Board-Liste hydriert die Zusatztickets ebenfalls.
+    const list = repos.jobs.listSummaries();
+    expect(list).toHaveLength(1);
+    expect(list[0]?.additionalTickets).toHaveLength(2);
+  });
+
+  it('Vorgang: removeSecondaryTicket löst ein Ticket wieder heraus', () => {
+    const project = seedProject(repos);
+    const primary = repos.jobs.insert({
+      ticketId: seedTicket(repos, project.id).id,
+      projectId: project.id,
+      baseBranch: 'main',
+    });
+    const extra = repos.tickets.upsert({
+      projectId: project.id,
+      linearIssueId: 'lin-uuid-x',
+      identifier: 'APP-9',
+      title: 'Extra',
+      description: '',
+      url: 'https://linear.app/demo/issue/APP-9',
+      teamKey: 'APP',
+      teamName: 'App-Team',
+      priority: 2,
+      priorityLabel: 'High',
+      labels: [],
+      linearState: 'Todo',
+      linearCreatedAt: '2026-07-01T10:00:00.000Z',
+      linearUpdatedAt: '2026-07-02T10:00:00.000Z',
+    });
+    const other = repos.jobs.insert({
+      ticketId: extra.id,
+      projectId: project.id,
+      baseBranch: 'main',
+    });
+    repos.jobs.mergeInboxJobs(primary.id, [other.id]);
+    expect(repos.jobs.getSummary(primary.id)?.additionalTickets).toHaveLength(1);
+
+    repos.jobs.removeSecondaryTicket(primary.id, extra.id);
+    expect(repos.jobs.getSummary(primary.id)?.additionalTickets).toHaveLength(0);
+    // Ticket existiert noch (der neue Job wird vom Service angelegt).
+    expect(repos.tickets.get(extra.id)).toBeDefined();
+  });
+
+  it('Vorgang: Löschen entfernt primäre und sekundäre verwaiste Tickets', () => {
+    const project = seedProject(repos);
+    const t1 = seedTicket(repos, project.id);
+    const t2 = repos.tickets.upsert({
+      projectId: project.id,
+      linearIssueId: 'lin-uuid-2',
+      identifier: 'APP-2',
+      title: 'Zweites',
+      description: '',
+      url: 'https://linear.app/demo/issue/APP-2',
+      teamKey: 'APP',
+      teamName: 'App-Team',
+      priority: 2,
+      priorityLabel: 'High',
+      labels: [],
+      linearState: 'Todo',
+      linearCreatedAt: '2026-07-01T10:00:00.000Z',
+      linearUpdatedAt: '2026-07-02T10:00:00.000Z',
+    });
+    const survivor = repos.jobs.insert({
+      ticketId: t1.id,
+      projectId: project.id,
+      baseBranch: 'main',
+    });
+    const absorbed = repos.jobs.insert({
+      ticketId: t2.id,
+      projectId: project.id,
+      baseBranch: 'main',
+    });
+    repos.jobs.mergeInboxJobs(survivor.id, [absorbed.id]);
+
+    const result = repos.jobs.deleteWithRelations(survivor.id);
+    expect(result.ticketDeleted).toBe(true);
+    expect(repos.tickets.get(t1.id)).toBeUndefined();
+    expect(repos.tickets.get(t2.id)).toBeUndefined();
+    expect(repos.jobs.listSummaries()).toHaveLength(0);
   });
 
   it('Settings: get/set/all', () => {

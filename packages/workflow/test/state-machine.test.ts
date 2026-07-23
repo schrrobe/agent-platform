@@ -49,6 +49,13 @@ describe('assertManualTransition', () => {
     expect(() => assertManualTransition('review', 'done')).toThrow(InvalidTransitionError);
     expect(() => assertManualTransition('inbox', 'done')).toThrow(InvalidTransitionError);
   });
+
+  it('ready_for_human → agent_ready ist kein manueller Übergang (nur per Endpoint)', () => {
+    expect(() => assertTransition('ready_for_human', 'agent_ready')).not.toThrow();
+    expect(() => assertManualTransition('ready_for_human', 'agent_ready')).toThrow(
+      InvalidTransitionError,
+    );
+  });
 });
 
 describe('decideAfterReview', () => {

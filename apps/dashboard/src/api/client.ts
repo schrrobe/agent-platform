@@ -8,7 +8,9 @@ import type {
   JobState,
   JobSummary,
   LinearAssignedIssue,
+  LinearWorkflowState,
   LogLine,
+  WorktreeInfo,
   Project,
   ProjectCreateInput,
   ProjectUpdateInput,
@@ -86,10 +88,14 @@ export const api = {
 
   listJobs: () => request<{ jobs: JobSummary[] }>('/api/jobs').then((r) => r.jobs),
   getJob: (id: string) => request<{ job: JobDetail }>(`/api/jobs/${id}`).then((r) => r.job),
+  getTeamStates: (teamKey: string) =>
+    request<{ states: LinearWorkflowState[] }>(
+      `/api/linear/team-states?teamKey=${encodeURIComponent(teamKey)}`,
+    ).then((r) => r.states),
   listAssignedIssues: (limit = 50) =>
-    request<{ issues: LinearAssignedIssue[] }>(
-      `/api/linear/assigned-issues?limit=${limit}`,
-    ).then((r) => r.issues),
+    request<{ issues: LinearAssignedIssue[] }>(`/api/linear/assigned-issues?limit=${limit}`).then(
+      (r) => r.issues,
+    ),
   importTicket: (input: ImportRequestInput) =>
     request<{ job: JobSummary }>('/api/jobs/import', {
       method: 'POST',
@@ -100,6 +106,16 @@ export const api = {
       method: 'POST',
       body: JSON.stringify(input),
     }).then((r) => r.result),
+  groupJobs: (jobIds: string[]) =>
+    request<{ job: JobSummary }>('/api/jobs/group', {
+      method: 'POST',
+      body: JSON.stringify({ jobIds }),
+    }).then((r) => r.job),
+  ungroupTicket: (id: string, ticketId: string) =>
+    request<{ job: JobSummary; newJob: JobSummary }>(`/api/jobs/${id}/ungroup`, {
+      method: 'POST',
+      body: JSON.stringify({ ticketId }),
+    }),
   updateTicketDescription: (id: string, description: string) =>
     request<{ job: JobSummary }>(`/api/jobs/${id}/ticket-description`, {
       method: 'PATCH',
@@ -109,8 +125,11 @@ export const api = {
     request<{ job: JobSummary }>(`/api/jobs/${id}/start`, { method: 'POST' }).then((r) => r.job),
   pauseJob: (id: string) =>
     request<{ job: JobSummary }>(`/api/jobs/${id}/pause`, { method: 'POST' }).then((r) => r.job),
-  retryJob: (id: string) =>
-    request<{ job: JobSummary }>(`/api/jobs/${id}/retry`, { method: 'POST' }).then((r) => r.job),
+  retryJob: (id: string, note = '') =>
+    request<{ job: JobSummary }>(`/api/jobs/${id}/retry`, {
+      method: 'POST',
+      body: JSON.stringify({ note }),
+    }).then((r) => r.job),
   resetJob: (id: string, removeWorktree: boolean) =>
     request<{ job: JobSummary }>(`/api/jobs/${id}/reset`, {
       method: 'POST',
@@ -126,6 +145,16 @@ export const api = {
       method: 'POST',
       body: JSON.stringify({ note }),
     }).then((r) => r.job),
+  approveDiff: (id: string, note = '') =>
+    request<{ job: JobSummary }>(`/api/jobs/${id}/approve-diff`, {
+      method: 'POST',
+      body: JSON.stringify({ note }),
+    }).then((r) => r.job),
+  requestChanges: (id: string, note: string) =>
+    request<{ job: JobSummary }>(`/api/jobs/${id}/request-changes`, {
+      method: 'POST',
+      body: JSON.stringify({ note }),
+    }).then((r) => r.job),
   cancelJob: (id: string) =>
     request<{ job: JobSummary }>(`/api/jobs/${id}/cancel`, { method: 'POST' }).then((r) => r.job),
   runGithubReview: (id: string) =>
@@ -138,6 +167,16 @@ export const api = {
       method: 'PATCH',
       body: JSON.stringify({ state }),
     }).then((r) => r.job),
+  setJobPriority: (id: string, priority: number) =>
+    request<{ job: JobSummary }>(`/api/jobs/${id}/priority`, {
+      method: 'PATCH',
+      body: JSON.stringify({ priority }),
+    }).then((r) => r.job),
+  reorderJob: (id: string, afterJobId: string | null) =>
+    request<{ job: JobSummary }>(`/api/jobs/${id}/queue-position`, {
+      method: 'PATCH',
+      body: JSON.stringify({ afterJobId }),
+    }).then((r) => r.job),
   getLogs: (id: string, afterSeq?: number) =>
     request<{ logs: LogLine[] }>(
       `/api/jobs/${id}/logs${afterSeq ? `?afterSeq=${afterSeq}` : ''}`,
@@ -146,4 +185,22 @@ export const api = {
     request<{ artifacts: Artifact[] }>(`/api/jobs/${id}/artifacts`).then((r) => r.artifacts),
 
   tokenStats: () => request<TokenStats>('/api/stats/tokens'),
+  listMaintenanceWorktrees: () =>
+    request<{ worktrees: WorktreeInfo[] }>('/api/maintenance/worktrees').then((r) => r.worktrees),
+  removeMaintenanceWorktree: (input: { projectId: string; path: string; jobId?: string | null }) =>
+    request<null>('/api/maintenance/worktrees', {
+      method: 'DELETE',
+      body: JSON.stringify(input),
+    }),
+  getSettings: () => request<AppSettings>('/api/settings'),
+  updateSettings: (patch: Partial<AppSettings>) =>
+    request<AppSettings>('/api/settings', {
+      method: 'PATCH',
+      body: JSON.stringify(patch),
+    }),
 };
+
+export interface AppSettings {
+  implementationAgent: 'codex' | 'claude';
+  maxConcurrentJobs: number;
+}

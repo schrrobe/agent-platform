@@ -22,6 +22,7 @@ import { TestSandbox } from './services/test-sandbox.js';
 import { JobPipeline } from './pipeline/pipeline.js';
 import { JobQueue } from './pipeline/queue.js';
 import { JobService } from './services/job-service.js';
+import { MaintenanceService } from './services/maintenance-service.js';
 import { GithubCliClient } from './services/github-client.js';
 import { GithubReviewService } from './services/github-review.js';
 
@@ -40,7 +41,10 @@ export interface AppContext {
   queue: JobQueue;
   pipeline: JobPipeline;
   jobs: JobService;
+  maintenance: MaintenanceService;
   githubReviews: GithubReviewService;
+  claudeAgent: ClaudeCodeAdapter;
+  codexAgent: CodexCliAdapter;
 }
 
 export interface ContextOverrides {
@@ -102,13 +106,22 @@ export function createContext(
     repos,
     git,
     planner: claude,
-    implementer: codex,
+    implementer: config.agents.implementationAgent === 'claude' ? claude : codex,
     reviewer: claude,
     linear,
     publisher,
     logStore,
     testSandbox,
   });
+  // Der Datenbank-Schalter darf die .env-Voreinstellung übersteuern.
+  const savedImplementationAgent = repos.settings.get('implementation_agent');
+  if (savedImplementationAgent === 'claude' || savedImplementationAgent === 'codex') {
+    pipeline.setImplementer(savedImplementationAgent === 'claude' ? claude : codex);
+  }
+  const savedMaxConcurrent = Number(repos.settings.get('max_concurrent_jobs'));
+  if (Number.isInteger(savedMaxConcurrent) && savedMaxConcurrent >= 1 && savedMaxConcurrent <= 16) {
+    config.limits.maxConcurrentJobs = savedMaxConcurrent;
+  }
   const queue = new JobQueue({ pipeline, config, logger, repos });
   const mutex = new KeyedMutex();
   const jobs = new JobService({
@@ -122,6 +135,7 @@ export function createContext(
     git,
     testSandbox,
   });
+  const maintenance = new MaintenanceService({ repos, git, queue, runner: executor, logger });
   const github = new GithubCliClient(executor, githubEnv);
   const githubReviews = new GithubReviewService({
     config,
@@ -150,6 +164,9 @@ export function createContext(
     queue,
     pipeline,
     jobs,
+    maintenance,
     githubReviews,
+    claudeAgent: claude,
+    codexAgent: codex,
   };
 }

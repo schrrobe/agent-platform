@@ -22,4 +22,8 @@ describe('loadConfig model overrides', () => {
     const config = loadConfig({ CLAUDE_MAX_BUDGET_USD: '' });
     expect(config.agents.claudeMaxBudgetUsd).toBeUndefined();
   });
+
+  it('akzeptiert Claude als Implementierungs-Agent', () => {
+    expect(loadConfig({ IMPLEMENTATION_AGENT: 'claude' }).agents.implementationAgent).toBe('claude');
+  });
 });

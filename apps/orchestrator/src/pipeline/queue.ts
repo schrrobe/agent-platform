@@ -1,4 +1,5 @@
 import type { Logger } from 'pino';
+import { compareQueueOrder } from '@agent/shared';
 import type { Repositories } from '@agent/database';
 import type { AppConfig } from '../config.js';
 import type { JobPipeline } from './pipeline.js';
@@ -147,13 +148,24 @@ export class JobQueue {
     return false;
   }
 
+  /** Erhöht/senkt die Parallelität zur Laufzeit und füllt frei gewordene Slots sofort. */
+  setMaxConcurrent(value: number): void {
+    this.deps.config.limits.maxConcurrentJobs = value;
+    this.pump();
+  }
+
   private pump(): void {
     if (this.stopping) return;
     if (this.running.size >= this.deps.config.limits.maxConcurrentJobs) return;
-    const idx = this.waiting.findIndex((jobId) => {
-      const job = this.deps.repos.jobs.get(jobId);
-      return job != null && !this.hasProjectConflict(job.projectId);
-    });
+    // Wartende Jobs nach Queue-Priorität, manueller Position, Alter — nicht FIFO-Einfügung.
+    const candidates = this.waiting
+      .map((jobId) => ({ jobId, job: this.deps.repos.jobs.get(jobId) }))
+      .filter(
+        (entry): entry is { jobId: string; job: NonNullable<typeof entry.job> } =>
+          entry.job != null && !this.hasProjectConflict(entry.job.projectId),
+      )
+      .sort((a, b) => compareQueueOrder(a.job, b.job));
+    const idx = candidates.length ? this.waiting.indexOf(candidates[0]!.jobId) : -1;
     if (idx >= 0) {
       const [jobId] = this.waiting.splice(idx, 1);
       if (jobId) this.start(jobId);

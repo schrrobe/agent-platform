@@ -9,6 +9,7 @@ describe('Board-Spalten', () => {
       'agent_ready',
       'in_progress',
       'awaiting_plan_approval',
+      'awaiting_diff_approval',
       'needs_human',
       'ready_for_human',
       'done',

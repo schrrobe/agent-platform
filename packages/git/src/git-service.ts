@@ -3,7 +3,9 @@ import os from 'node:os';
 import path from 'node:path';
 import type { ProcessResult, ProcessRunner } from '@agent/shared';
 import {
+  branchForIdentifier,
   branchForTicket,
+  isPathInside,
   isSameOrInside,
   jobSuffix,
   worktreePathForJob,
@@ -467,19 +469,44 @@ export class GitService {
     }
   }
 
+  /** Liest die Eigentümerdatei tolerant; null bei fehlender/ungültiger Datei. */
+  readWorktreeOwner(worktreePath: string): WorktreeOwner | null {
+    const ownerPath = path.join(worktreePath, AGENT_DIR, OWNER_FILE);
+    try {
+      const raw = JSON.parse(fs.readFileSync(ownerPath, 'utf8')) as Record<string, unknown>;
+      if (
+        typeof raw.jobId === 'string' &&
+        typeof raw.branch === 'string' &&
+        typeof raw.repositoryPath === 'string' &&
+        typeof raw.baseCommit === 'string'
+      ) {
+        return {
+          jobId: raw.jobId,
+          branch: raw.branch,
+          repositoryPath: raw.repositoryPath,
+          baseCommit: raw.baseCommit,
+        };
+      }
+    } catch {
+      // fehlende oder kaputte Datei → verwaist
+    }
+    return null;
+  }
+
   /**
-   * Entfernt einen sauberen, eindeutig zugeordneten Worktree über Git. Der Branch bleibt bestehen.
+   * Entfernt einen sauberen Worktree über Git. Der Branch bleibt bestehen.
    * `.agent/` wird temporär gesichert, damit `git worktree remove` ohne `--force` arbeiten kann.
    */
-  async removeOwnedWorktree(
+  private async removeWorktreeInternal(
     repositoryPath: string,
     worktreePath: string,
-    expected: WorktreeOwner,
   ): Promise<void> {
-    this.verifyOwner(worktreePath, expected);
-    await this.assertWorktreeClean(worktreePath);
-
     const agentDir = path.join(worktreePath, AGENT_DIR);
+    const hasAgentDir = fs.existsSync(agentDir);
+    if (!hasAgentDir) {
+      await this.git(repositoryPath, ['worktree', 'remove', worktreePath]);
+      return;
+    }
     const backupRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'agent-worktree-remove-'));
     const backupAgentDir = path.join(backupRoot, AGENT_DIR);
     try {
@@ -496,6 +523,47 @@ export class GitService {
     } finally {
       fs.rmSync(backupRoot, { recursive: true, force: true });
     }
+  }
+
+  /** Entfernt einen sauberen, eindeutig zugeordneten Worktree. Der Branch bleibt bestehen. */
+  async removeOwnedWorktree(
+    repositoryPath: string,
+    worktreePath: string,
+    expected: WorktreeOwner,
+  ): Promise<void> {
+    this.verifyOwner(worktreePath, expected);
+    await this.assertWorktreeClean(worktreePath);
+    await this.removeWorktreeInternal(repositoryPath, worktreePath);
+  }
+
+  /**
+   * Entfernt einen verwaisten Worktree (kein zugehöriger Job mehr). Vier Schutzschichten:
+   * Pfad strikt unter `worktreeRoot` und ≠ Repo, in git registriert, sauber (kein --force).
+   */
+  async removeUnownedWorktree(
+    repositoryPath: string,
+    worktreePath: string,
+    options: { worktreeRoot: string },
+  ): Promise<void> {
+    if (!isPathInside(options.worktreeRoot, worktreePath)) {
+      throw new GitConflictError(
+        `Worktree ${worktreePath} liegt nicht innerhalb von ${options.worktreeRoot}`,
+      );
+    }
+    if (canonicalPath(worktreePath) === canonicalPath(repositoryPath)) {
+      throw new GitConflictError('Das Haupt-Repository kann nicht entfernt werden');
+    }
+    const entries = await this.listWorktrees(repositoryPath);
+    const registered = entries.some(
+      (entry) => canonicalPath(entry.path) === canonicalPath(worktreePath),
+    );
+    if (!registered) {
+      throw new GitConflictError(
+        `Worktree ${worktreePath} ist bei ${repositoryPath} nicht registriert`,
+      );
+    }
+    await this.assertWorktreeClean(worktreePath);
+    await this.removeWorktreeInternal(repositoryPath, worktreePath);
   }
 
   /**

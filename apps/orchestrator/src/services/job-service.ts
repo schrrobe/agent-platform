@@ -10,6 +10,7 @@ import {
   type JobState,
   type JobSummary,
   type LinearAssignedIssue,
+  type LinearSyncEvent,
   type PipelinePhase,
 } from '@agent/shared';
 import type { Repositories } from '@agent/database';
@@ -152,6 +153,111 @@ export class JobService {
     return result;
   }
 
+  /**
+   * Führt mehrere Inbox-Jobs zu einem Vorgang zusammen: der früheste Job bleibt
+   * als Survivor mit seinem primären Ticket (Branch/Titel); die Tickets der
+   * übrigen Jobs werden sekundäre Tickets, deren Job-Zeilen entfallen.
+   */
+  async groupJobs(jobIds: readonly string[]): Promise<JobSummary> {
+    const unique = [...new Set(jobIds)];
+    if (unique.length < 2) {
+      throw new JobServiceError('CONFLICT', 'Mindestens zwei Jobs für einen Vorgang erforderlich');
+    }
+    const jobs = unique.map((id) => {
+      const job = this.deps.repos.jobs.get(id);
+      if (!job) throw new JobServiceError('NOT_FOUND', `Job nicht gefunden: ${id}`);
+      return job;
+    });
+    const { projectId } = jobs[0];
+    if (jobs.some((job) => job.projectId !== projectId)) {
+      throw new JobServiceError('CONFLICT', 'Nur Jobs desselben Projekts können gruppiert werden');
+    }
+    // Survivor = frühester Job; deterministisch nach createdAt (Tie-Break: id).
+    const ordered = [...jobs].sort(
+      (a, b) => a.createdAt.localeCompare(b.createdAt) || a.id.localeCompare(b.id),
+    );
+    const survivor = ordered[0];
+    const absorbed = ordered.slice(1);
+    return this.deps.mutex.runMany(
+      ordered.map((job) => `ticket:${job.ticketId}`),
+      async () => {
+        // Im Lock re-validieren: alle noch vorhanden, inbox, idle.
+        for (const job of ordered) {
+          const current = this.deps.repos.jobs.get(job.id);
+          if (!current) throw new JobServiceError('NOT_FOUND', `Job nicht gefunden: ${job.id}`);
+          if (current.state !== 'inbox') {
+            throw new JobServiceError(
+              'CONFLICT',
+              `Nur Jobs im Zustand inbox können gruppiert werden (${current.id})`,
+            );
+          }
+          this.assertIdleForDestructiveAction(current);
+        }
+        this.deps.repos.jobs.mergeInboxJobs(
+          survivor.id,
+          absorbed.map((job) => job.id),
+        );
+        for (const job of absorbed) {
+          this.deps.logStore.clear(job.id);
+          this.deps.publisher.emit('job.deleted', job.id, { jobId: job.id });
+        }
+        const summary = this.getSummary(survivor.id);
+        this.deps.publisher.record({
+          type: 'job.updated',
+          jobId: survivor.id,
+          payload: { job: summary },
+          message: `Vorgang gebildet: ${summary.additionalTickets.length + 1} Tickets`,
+        });
+        return summary;
+      },
+    );
+  }
+
+  /**
+   * Löst ein sekundäres Ticket aus einem Vorgang und legt dafür wieder einen
+   * eigenen Inbox-Job an. Nur für idle Vorgänge zulässig.
+   */
+  async ungroupTicket(
+    jobId: string,
+    ticketId: string,
+  ): Promise<{ job: JobSummary; newJob: JobSummary }> {
+    return this.withJob(jobId, async (job) => {
+      this.assertIdleForDestructiveAction(job);
+      if (job.ticketId === ticketId) {
+        throw new JobServiceError(
+          'CONFLICT',
+          'Das primäre Ticket kann nicht aus dem Vorgang gelöst werden',
+        );
+      }
+      const ticketIds = this.deps.repos.jobs.listTicketIdsForJob(job.id);
+      if (!ticketIds.includes(ticketId)) {
+        throw new JobServiceError('NOT_FOUND', `Ticket gehört nicht zum Vorgang: ${ticketId}`);
+      }
+      const ticket = this.deps.repos.tickets.get(ticketId);
+      if (!ticket) throw new JobServiceError('NOT_FOUND', `Ticket nicht gefunden: ${ticketId}`);
+      const newJob = this.deps.repos.jobs.ungroupSecondaryTicket(job.id, ticketId, {
+        projectId: job.projectId,
+        baseBranch: job.baseBranch,
+      });
+      const survivor = this.getSummary(job.id);
+      const created = this.getSummary(newJob.id);
+      this.deps.publisher.record({
+        type: 'job.created',
+        jobId: newJob.id,
+        payload: { job: created },
+        toState: 'inbox',
+        message: `Ticket ${ticket.identifier} aus Vorgang gelöst`,
+      });
+      this.deps.publisher.record({
+        type: 'job.updated',
+        jobId: job.id,
+        payload: { job: survivor },
+        message: `Ticket ${ticket.identifier} aus Vorgang gelöst`,
+      });
+      return { job: survivor, newJob: created };
+    });
+  }
+
   async updateTicketDescription(jobId: string, description: string): Promise<JobSummary> {
     return this.withJob(jobId, async (job) => {
       if (
@@ -241,7 +347,118 @@ export class JobService {
     );
   }
 
-  async retry(jobId: string): Promise<JobSummary> {
+  /** Broadcastet den aktuellen Stand eines Jobs als job.updated und liefert ihn zurück. */
+  private publishUpdated(jobId: string): JobSummary {
+    const summary = this.getSummary(jobId);
+    this.deps.publisher.record({ type: 'job.updated', jobId, payload: { job: summary } });
+    return summary;
+  }
+
+  /** Setzt die Queue-Priorität (1=hoch, 0=normal, -1=niedrig); in jedem Zustand erlaubt. */
+  async setPriority(jobId: string, priority: number): Promise<JobSummary> {
+    return this.withJob(jobId, () => {
+      this.deps.repos.jobs.update(jobId, { queuePriority: priority });
+      return this.publishUpdated(jobId);
+    });
+  }
+
+  /**
+   * Ordnet einen wartenden Job manuell hinter einen anderen (null = an den Anfang).
+   * Nur für inbox/agent_ready; übernimmt die Priorität des Referenz-Nachbarn.
+   */
+  async reorder(jobId: string, afterJobId: string | null): Promise<JobSummary> {
+    return this.withJob(jobId, (job) => {
+      if (job.state !== 'inbox' && job.state !== 'agent_ready') {
+        throw new JobServiceError(
+          'CONFLICT',
+          `Umsortieren ist nur in inbox/agent_ready möglich (aktuell: ${job.state})`,
+        );
+      }
+      if (afterJobId === jobId) {
+        throw new JobServiceError('CONFLICT', 'Job kann nicht hinter sich selbst stehen');
+      }
+      const ordered = this.deps.repos.jobs
+        .listByStateOrdered(job.state)
+        .filter((entry) => entry.id !== jobId);
+      // Weitere Jobs, deren Position durch ein Rebalance mitverändert wurde.
+      const rebalancedIds: string[] = [];
+      let priority: number;
+      let position: number;
+      if (afterJobId === null) {
+        const first = ordered[0];
+        priority = first ? first.queuePriority : job.queuePriority;
+        position = first ? first.queuePosition - 1000 : Date.now();
+      } else {
+        const anchorIndex = ordered.findIndex((entry) => entry.id === afterJobId);
+        if (anchorIndex < 0) {
+          throw new JobServiceError('CONFLICT', 'Referenz-Job ist nicht im selben Zustand wartend');
+        }
+        const anchor = ordered[anchorIndex]!;
+        priority = anchor.queuePriority;
+        const next = ordered
+          .slice(anchorIndex + 1)
+          .find((entry) => entry.queuePriority === anchor.queuePriority);
+        position = next
+          ? (anchor.queuePosition + next.queuePosition) / 2
+          : anchor.queuePosition + 1000;
+        // Fractional Indexing degeneriert irgendwann — dann Spalte neu durchnummerieren.
+        if (next && next.queuePosition - anchor.queuePosition < 1e-6) {
+          const rebalanced = [...ordered];
+          rebalanced.splice(anchorIndex + 1, 0, job);
+          rebalanced.forEach((entry, index) => {
+            if (entry.id === jobId) return;
+            this.deps.repos.jobs.update(entry.id, { queuePosition: (index + 1) * 1000 });
+            rebalancedIds.push(entry.id);
+          });
+          position = (anchorIndex + 2) * 1000;
+        }
+      }
+      this.deps.repos.jobs.update(jobId, { queuePriority: priority, queuePosition: position });
+      // Alle vom Rebalance betroffenen Geschwister ebenfalls broadcasten, sonst
+      // rendert das Board sie in veralteter Reihenfolge.
+      for (const id of rebalancedIds) this.publishUpdated(id);
+      return this.publishUpdated(jobId);
+    });
+  }
+
+  /** Persistiert eine menschliche Notiz als Artifact und broadcastet sie. */
+  /** Verweigert Aktionen, deren Basisbranch inzwischen fortgeschritten ist. */
+  private assertBaseNotStale(job: Job): void {
+    if (job.baseStale) {
+      throw new JobServiceError(
+        'CONFLICT',
+        'Basisbranch ist fortgeschritten; Branch manuell aktualisieren oder Ticket als neuen Job importieren',
+      );
+    }
+  }
+
+  private recordNoteArtifact(
+    jobId: string,
+    type: 'approval' | 'human_feedback',
+    note: string,
+  ): void {
+    const artifact = this.deps.repos.artifacts.insert({
+      jobId,
+      type,
+      content: note.trim(),
+    });
+    this.deps.publisher.record({
+      type: 'artifact.created',
+      jobId,
+      payload: {
+        artifact: {
+          id: artifact.id,
+          jobId,
+          agentRunId: null,
+          type: artifact.type,
+          path: null,
+          createdAt: artifact.createdAt,
+        },
+      },
+    });
+  }
+
+  async retry(jobId: string, note = ''): Promise<JobSummary> {
     return this.withJob(jobId, (job) => {
       if (job.state !== 'failed' && job.state !== 'needs_human' && job.state !== 'paused') {
         throw new JobServiceError(
@@ -249,11 +466,15 @@ export class JobService {
           `Retry ist nur aus failed/needs_human/paused möglich (aktuell: ${job.state})`,
         );
       }
-      if (job.baseStale) {
+      if (note.trim() && job.state !== 'needs_human') {
         throw new JobServiceError(
           'CONFLICT',
-          'Basisbranch ist fortgeschritten; Branch manuell aktualisieren oder Ticket als neuen Job importieren',
+          'Feedback beim Retry ist nur aus needs_human möglich',
         );
+      }
+      this.assertBaseNotStale(job);
+      if (note.trim()) {
+        this.recordNoteArtifact(jobId, 'human_feedback', note);
       }
       return this.moveToAgentReady(job, 'Lauf am gespeicherten Checkpoint fortgesetzt', {
         resumePhase: job.resumePhase ?? 'preflight',
@@ -272,25 +493,7 @@ export class JobService {
       }
       assertTransition(job.state, 'agent_ready');
       if (note.trim()) {
-        const artifact = this.deps.repos.artifacts.insert({
-          jobId,
-          type: 'approval',
-          content: note.trim(),
-        });
-        this.deps.publisher.record({
-          type: 'artifact.created',
-          jobId,
-          payload: {
-            artifact: {
-              id: artifact.id,
-              jobId,
-              agentRunId: null,
-              type: artifact.type,
-              path: null,
-              createdAt: artifact.createdAt,
-            },
-          },
-        });
+        this.recordNoteArtifact(jobId, 'approval', note);
       }
       this.deps.repos.jobs.update(jobId, {
         state: 'agent_ready',
@@ -300,6 +503,70 @@ export class JobService {
         lastError: null,
       });
       this.broadcastStateChange(jobId, job.state, 'agent_ready', 'Plan menschlich freigegeben');
+      this.deps.queue.enqueueAfterCurrent(jobId);
+      return this.getSummary(jobId);
+    });
+  }
+
+  /** Freigabe am Diff-Gate (autonomyMode approve_diff): Pipeline setzt beim Review fort. */
+  async approveDiff(jobId: string, note: string): Promise<JobSummary> {
+    return this.withJob(jobId, (job) => {
+      if (job.state !== 'awaiting_diff_approval') {
+        throw new JobServiceError(
+          'INVALID_TRANSITION',
+          `Diff-Freigabe ist nur aus awaiting_diff_approval möglich (aktuell: ${job.state})`,
+        );
+      }
+      assertTransition(job.state, 'agent_ready');
+      if (note.trim()) {
+        // Wird nur injiziert, falls später tatsächlich eine Nacharbeitsrunde folgt.
+        this.recordNoteArtifact(jobId, 'human_feedback', note);
+      }
+      this.deps.repos.jobs.update(jobId, {
+        state: 'agent_ready',
+        resumePhase: 'review',
+        finishedAt: null,
+        lastError: null,
+      });
+      this.broadcastStateChange(jobId, job.state, 'agent_ready', 'Diff menschlich freigegeben');
+      this.deps.queue.enqueueAfterCurrent(jobId);
+      return this.getSummary(jobId);
+    });
+  }
+
+  /**
+   * „Änderungen anfordern": schickt den Job mit Pflicht-Feedback zurück in die
+   * Implementierung — aus ready_for_human oder vom Diff-Gate.
+   */
+  async requestChanges(jobId: string, note: string): Promise<JobSummary> {
+    return this.withJob(jobId, (job) => {
+      if (job.state !== 'ready_for_human' && job.state !== 'awaiting_diff_approval') {
+        throw new JobServiceError(
+          'INVALID_TRANSITION',
+          `Änderungswünsche sind nur aus ready_for_human/awaiting_diff_approval möglich (aktuell: ${job.state})`,
+        );
+      }
+      if (!note.trim()) {
+        throw new JobServiceError('CONFLICT', 'Änderungswünsche benötigen eine Beschreibung');
+      }
+      this.assertBaseNotStale(job);
+      assertTransition(job.state, 'agent_ready');
+      this.recordNoteArtifact(jobId, 'human_feedback', note);
+      this.deps.repos.jobs.update(jobId, {
+        state: 'agent_ready',
+        resumePhase: 'implementing',
+        // Menschliche Anweisung = neuer Arbeitsauftrag mit frischem Schleifenbudget.
+        reviewLoopCount: 0,
+        finishedAt: null,
+        lastError: null,
+        pauseRequested: false,
+      });
+      this.broadcastStateChange(
+        jobId,
+        job.state,
+        'agent_ready',
+        'Änderungen angefordert — zurück in die Nacharbeit',
+      );
       this.deps.queue.enqueueAfterCurrent(jobId);
       return this.getSummary(jobId);
     });
@@ -469,9 +736,59 @@ export class JobService {
     });
   }
 
+  /**
+   * Entfernt nur den Worktree eines idle Jobs; der Job bleibt erhalten und wird bei
+   * Retry deterministisch neu aufgebaut (Branch/Basis bleiben gespeichert).
+   */
+  async removeWorktree(jobId: string): Promise<JobSummary> {
+    return this.withJob(jobId, async (job) => {
+      this.assertIdleForDestructiveAction(job);
+      const owner = this.worktreeOwner(job);
+      if (!job.worktreePath || !owner) {
+        throw new JobServiceError('CONFLICT', 'Job hat keinen Worktree zum Entfernen');
+      }
+      await this.deps.git.removeOwnedWorktree(owner.repositoryPath, job.worktreePath, owner);
+      this.deps.repos.jobs.update(jobId, { worktreePath: null });
+      const summary = this.getSummary(jobId);
+      this.deps.publisher.emit('job.updated', jobId, { job: summary });
+      return summary;
+    });
+  }
+
+  /**
+   * Setzt den Linear-Workflow-State für ein Job-Ereignis, sofern das Projekt ein
+   * Mapping für das Team des Tickets hat. Fehler brechen den Ablauf nie.
+   */
+  private async syncLinearStateForJob(job: Job, event: LinearSyncEvent): Promise<void> {
+    const project = this.deps.repos.projects.get(job.projectId);
+    if (!project) return;
+    // Ein Vorgang umfasst mehrere Tickets — jedes einzeln synchronisieren.
+    const ticketIds = this.deps.repos.jobs.listTicketIdsForJob(job.id);
+    for (const ticketId of ticketIds) {
+      const ticket = this.deps.repos.tickets.get(ticketId);
+      if (!ticket) continue;
+      try {
+        await this.deps.linear.syncState(
+          project.linearStateSync,
+          ticket.teamKey,
+          ticket.linearIssueId,
+          event,
+        );
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        this.deps.logStore.append(job.id, {
+          ts: new Date().toISOString(),
+          source: 'system',
+          stream: 'info',
+          text: `Linear-Status-Sync (${event}) für ${ticket.identifier} fehlgeschlagen: ${message}`,
+        });
+      }
+    }
+  }
+
   /** Manuelle Zustandsänderung (Kanban-DnD / PATCH). */
   async patchState(jobId: string, to: JobState): Promise<JobSummary> {
-    return this.withJob(jobId, (job) => {
+    return this.withJob(jobId, async (job) => {
       if (this.deps.queue.isQueued(jobId) || job.currentAgent) {
         throw new JobServiceError(
           'CONFLICT',
@@ -503,6 +820,7 @@ export class JobService {
       const summary = this.getSummary(jobId);
       if (to === 'done') {
         this.deps.publisher.record({ type: 'job.completed', jobId, payload: { job: summary } });
+        await this.syncLinearStateForJob(job, 'onDone');
       }
       return summary;
     });

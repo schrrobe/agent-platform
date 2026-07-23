@@ -6,6 +6,25 @@ const props = defineProps<{ logs: LogLine[] }>();
 
 const container = ref<HTMLElement | null>(null);
 const autoScroll = ref(true);
+const copied = ref(false);
+
+async function copyAll(): Promise<void> {
+  const text = props.logs.map((line) => `${line.source}\t${line.text}`).join('\n');
+  try {
+    await navigator.clipboard.writeText(text);
+  } catch {
+    const ta = document.createElement('textarea');
+    ta.value = text;
+    ta.style.position = 'fixed';
+    ta.style.opacity = '0';
+    document.body.appendChild(ta);
+    ta.select();
+    document.execCommand('copy');
+    document.body.removeChild(ta);
+  }
+  copied.value = true;
+  setTimeout(() => (copied.value = false), 1500);
+}
 
 watch(
   () => props.logs.length,
@@ -32,9 +51,14 @@ function onScroll(): void {
       </div>
       <p v-if="logs.length === 0" class="faint empty">Keine Logausgaben.</p>
     </div>
-    <label class="follow">
-      <input v-model="autoScroll" type="checkbox" style="width: auto" /> Automatisch scrollen
-    </label>
+    <div class="bar">
+      <label class="follow">
+        <input v-model="autoScroll" type="checkbox" style="width: auto" /> Automatisch scrollen
+      </label>
+      <button type="button" class="copy" :disabled="logs.length === 0" @click="copyAll">
+        {{ copied ? 'Kopiert ✓' : 'Alles kopieren' }}
+      </button>
+    </div>
   </div>
 </template>
 
@@ -80,12 +104,22 @@ function onScroll(): void {
 .empty {
   padding: 8px;
 }
-.follow {
+.bar {
   margin: 6px 0 0;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+.follow {
   display: flex;
   gap: 6px;
   align-items: center;
   font-size: 12px;
   color: var(--text-dim);
+}
+.copy {
+  font-size: 12px;
+  padding: 4px 10px;
 }
 </style>

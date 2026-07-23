@@ -49,6 +49,7 @@ const confirmReset = ref(false);
 const confirmDelete = ref(false);
 const removeWorktree = ref(false);
 const approvalNote = ref('');
+const feedbackNote = ref('');
 const actionMessage = ref<string | null>(null);
 const actionError = ref<string | null>(null);
 const editingDescription = ref(false);
@@ -66,13 +67,32 @@ const canRetry = computed(() =>
     : false,
 );
 const canApprove = computed(() => detail.value?.state === 'awaiting_plan_approval');
+const canApproveDiff = computed(() => detail.value?.state === 'awaiting_diff_approval');
+const canRequestChanges = computed(() =>
+  detail.value
+    ? !detail.value.baseStale &&
+      ['ready_for_human', 'awaiting_diff_approval'].includes(detail.value.state)
+    : false,
+);
+const showFeedbackField = computed(
+  () =>
+    canApproveDiff.value ||
+    canRequestChanges.value ||
+    (canRetry.value && detail.value?.state === 'needs_human'),
+);
 const canPause = computed(() =>
   detail.value ? PAUSABLE_STATES.includes(detail.value.state) : false,
 );
 const canCancel = computed(() =>
   detail.value
     ? detail.value.currentAgent != null ||
-      !['done', 'failed', 'ready_for_human', 'awaiting_plan_approval'].includes(detail.value.state)
+      ![
+        'done',
+        'failed',
+        'ready_for_human',
+        'awaiting_plan_approval',
+        'awaiting_diff_approval',
+      ].includes(detail.value.state)
     : false,
 );
 const canComplete = computed(() => detail.value?.state === 'ready_for_human');
@@ -150,15 +170,53 @@ async function act(fn: () => Promise<{ id: string; state: JobState }>): Promise<
   }
 }
 
+// Ein sekundäres Ticket wieder aus dem Vorgang lösen (nur solange im Inbox).
+const canUngroup = computed(() => detail.value?.state === 'inbox');
+async function ungroup(ticketId: string): Promise<void> {
+  if (!detail.value) return;
+  busy.value = true;
+  actionMessage.value = null;
+  actionError.value = null;
+  try {
+    const { job, newJob } = await api.ungroupTicket(detail.value.id, ticketId);
+    jobs.upsert(job);
+    jobs.upsert(newJob);
+    await store.refresh();
+    actionMessage.value = 'Ticket aus Vorgang gelöst.';
+  } catch (error) {
+    actionError.value = (error as Error).message;
+  } finally {
+    busy.value = false;
+  }
+}
+
 const start = () => act(() => api.startJob(detail.value!.id));
-const retry = () => act(() => api.retryJob(detail.value!.id));
+const retry = () =>
+  act(() =>
+    // Feedback ist nur aus needs_human gültig; sonst leer senden, egal was im Feld steht.
+    api.retryJob(detail.value!.id, detail.value!.state === 'needs_human' ? feedbackNote.value : ''),
+  ).then(() => {
+    feedbackNote.value = '';
+  });
 const pause = () => act(() => api.pauseJob(detail.value!.id));
 const approve = () =>
   act(() => api.approvePlan(detail.value!.id, approvalNote.value)).then(() => {
     approvalNote.value = '';
   });
+const approveDiff = () =>
+  act(() => api.approveDiff(detail.value!.id, feedbackNote.value)).then(() => {
+    feedbackNote.value = '';
+  });
+const requestChanges = () =>
+  act(() => api.requestChanges(detail.value!.id, feedbackNote.value)).then(() => {
+    feedbackNote.value = '';
+  });
 const complete = () => act(() => api.patchState(detail.value!.id, 'done'));
 const acceptHuman = () => act(() => api.patchState(detail.value!.id, 'ready_for_human'));
+const changePriority = (event: Event) => {
+  const priority = Number((event.target as HTMLSelectElement).value);
+  act(() => api.setJobPriority(detail.value!.id, priority));
+};
 async function runGithubReview(): Promise<void> {
   busy.value = true;
   actionMessage.value = null;
@@ -244,6 +302,31 @@ async function deleteJob(): Promise<void> {
             >
           </div>
           <h2>{{ detail.ticket.title }}</h2>
+          <div v-if="detail.additionalTickets.length > 0" class="vorgang-list">
+            <span class="vorgang-title">
+              Vorgang · {{ detail.additionalTickets.length + 1 }} Tickets
+            </span>
+            <ul>
+              <li>
+                <span class="identifier">{{ detail.ticket.identifier }}</span>
+                <span class="vt-title">{{ detail.ticket.title }}</span>
+                <span class="vt-primary">primär</span>
+              </li>
+              <li v-for="t in detail.additionalTickets" :key="t.id">
+                <span class="identifier">{{ t.identifier }}</span>
+                <span class="vt-title">{{ t.title }}</span>
+                <button
+                  v-if="canUngroup"
+                  class="ungroup"
+                  :disabled="busy"
+                  title="Aus Vorgang lösen"
+                  @click="ungroup(t.id)"
+                >
+                  lösen
+                </button>
+              </li>
+            </ul>
+          </div>
         </div>
         <button v-if="mode === 'drawer'" class="close" @click="emit('close')">✕</button>
       </header>
@@ -254,6 +337,16 @@ async function deleteJob(): Promise<void> {
         <button v-if="canRetry" :disabled="busy" @click="retry">↻ Erneut</button>
         <button v-if="canApprove" class="primary" :disabled="busy" @click="approve">
           ✓ Plan freigeben
+        </button>
+        <button v-if="canApproveDiff" class="primary" :disabled="busy" @click="approveDiff">
+          ✓ Diff freigeben
+        </button>
+        <button
+          v-if="canRequestChanges"
+          :disabled="busy || !feedbackNote.trim()"
+          @click="requestChanges"
+        >
+          ↩ Änderungen anfordern
         </button>
         <button v-if="canComplete" :disabled="busy" @click="complete">✓ Handoff bestätigt</button>
         <button v-if="canAcceptHuman" :disabled="busy" @click="acceptHuman">
@@ -281,12 +374,34 @@ async function deleteJob(): Promise<void> {
         <span v-else class="err">{{ actionError }}</span>
       </div>
 
+      <div class="priority-control">
+        <label>Queue-Priorität</label>
+        <select :value="detail.queuePriority" :disabled="busy" @change="changePriority">
+          <option :value="1">Hoch</option>
+          <option :value="0">Normal</option>
+          <option :value="-1">Niedrig</option>
+        </select>
+      </div>
+
       <div v-if="canApprove" class="approval">
         <label>Antworten auf offene Fragen oder zusätzliche Freigabehinweise</label>
         <textarea
           v-model="approvalNote"
           rows="3"
           placeholder="Optional: Annahmen bestätigen oder Fragen aus PLAN.md beantworten"
+        />
+      </div>
+
+      <div v-if="showFeedbackField" class="approval">
+        <label>Feedback für die Nacharbeit</label>
+        <textarea
+          v-model="feedbackNote"
+          rows="3"
+          :placeholder="
+            canRequestChanges
+              ? 'Pflicht bei Änderungswünschen, optional bei Freigabe/Retry — wird dem Agenten wörtlich übergeben'
+              : 'Optional: Hinweise für den nächsten Lauf — wird dem Agenten wörtlich übergeben'
+          "
         />
       </div>
 
@@ -335,6 +450,10 @@ async function deleteJob(): Promise<void> {
               markdown
               empty="Keine Beschreibung."
             />
+            <template v-for="t in detail.additionalTickets" :key="t.id">
+              <h4 class="secondary-ticket">{{ t.identifier }} — {{ t.title }}</h4>
+              <ArtifactViewer :content="t.description" markdown empty="Keine Beschreibung." />
+            </template>
           </template>
         </div>
         <WorkflowTimeline v-else-if="tab === 'Verlauf'" :events="detail.events" />
@@ -487,6 +606,44 @@ async function deleteJob(): Promise<void> {
 .loops {
   color: var(--c-warn);
   font-size: 12px;
+}
+.vorgang-list {
+  margin-top: 8px;
+  font-size: 13px;
+}
+.vorgang-title {
+  color: var(--accent);
+  font-weight: 600;
+}
+.vorgang-list ul {
+  list-style: none;
+  margin: 4px 0 0;
+  padding: 0;
+}
+.vorgang-list li {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 2px 0;
+}
+.vorgang-list .vt-title {
+  color: var(--text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.vorgang-list .vt-primary {
+  font-size: 11px;
+  color: var(--text-faint);
+}
+.vorgang-list .ungroup {
+  margin-left: auto;
+  font-size: 11px;
+  padding: 1px 8px;
+}
+.secondary-ticket {
+  margin: 16px 0 4px;
+  color: var(--accent);
 }
 .head h2 {
   margin: 6px 0 0;

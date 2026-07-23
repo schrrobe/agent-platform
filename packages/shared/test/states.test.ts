@@ -74,4 +74,20 @@ describe('TRANSITIONS', () => {
   it('inbox → agent_ready ist der manuelle Startübergang', () => {
     expect(isManualTransitionAllowed('inbox', 'agent_ready')).toBe(true);
   });
+
+  it('Diff-Gate: testing → awaiting_diff_approval → agent_ready', () => {
+    expect(canTransition('testing', 'awaiting_diff_approval')).toBe(true);
+    expect(canTransition('awaiting_diff_approval', 'agent_ready')).toBe(true);
+    expect(canTransition('awaiting_diff_approval', 'inbox')).toBe(true);
+  });
+
+  it('„Änderungen anfordern": ready_for_human → agent_ready erlaubt, aber nicht manuell', () => {
+    expect(canTransition('ready_for_human', 'agent_ready')).toBe(true);
+    expect(isManualTransitionAllowed('ready_for_human', 'agent_ready')).toBe(false);
+  });
+
+  it('Diff-Gate ist per Board nur nach inbox verschiebbar', () => {
+    expect(isManualTransitionAllowed('awaiting_diff_approval', 'inbox')).toBe(true);
+    expect(isManualTransitionAllowed('awaiting_diff_approval', 'agent_ready')).toBe(false);
+  });
 });

@@ -2,9 +2,11 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import type { Logger } from 'pino';
 import {
+  allCriteriaVisual,
   buildImplementPrompt,
   buildPlanPrompt,
   buildReviewPrompt,
+  classifyVisualCriteria,
   parseImplementationResult,
   parsePlanResult,
   parseReviewResult,
@@ -35,6 +37,7 @@ import {
   type Project,
   type ReviewResult,
   type TestExecutionMode,
+  type LinearSyncEvent,
   type Ticket,
 } from '@agent/shared';
 import type { Repositories } from '@agent/database';
@@ -71,9 +74,29 @@ function displayAgentName(name: AgentName): string {
   return `${name.charAt(0).toUpperCase()}${name.slice(1)}`;
 }
 
+/**
+ * Signatur automatisierter Visual-/E2E-Prüfläufe in Projektbefehlen. Ist ein
+ * solcher Runner konfiguriert, gilt Sichtprüfung als maschinell abgedeckt — dann
+ * greift die visuelle Handoff-Abkürzung nicht.
+ */
+const VISUAL_RUNNER_RE =
+  /playwright|cypress|percy|chromatic|storybook|puppeteer|webdriver|selenium|backstop|\bloki\b|screenshot|\bvisual\b|\be2e\b/i;
+
 /** Deterministische, checkpoint-fähige Job-Pipeline. */
 export class JobPipeline {
-  constructor(private readonly deps: PipelineDeps) {}
+  private implementer: AgentAdapter;
+
+  constructor(private readonly deps: PipelineDeps) {
+    this.implementer = deps.implementer;
+  }
+
+  setImplementer(implementer: AgentAdapter): void {
+    this.implementer = implementer;
+  }
+
+  get implementationAgent(): AgentName {
+    return this.implementer.name;
+  }
 
   /** Pflichtprüfungen für explizite Nacharbeiten außerhalb der normalen Zustands-Pipeline. */
   async verifyPostRunChanges(
@@ -117,6 +140,7 @@ export class JobPipeline {
       if (next === 'preflight') {
         if (await this.boundary(jobId, signal, 'preflight')) return;
         await this.transition(jobId, 'preflight', 'Sicherheits-Preflight gestartet');
+        await this.syncLinearState(project, jobId, 'onStart', log);
         await this.preflightPhase(jobId, project, signal, log);
         this.deps.repos.jobs.update(jobId, { resumePhase: 'planning' });
         next = 'planning';
@@ -125,7 +149,7 @@ export class JobPipeline {
       if (next === 'planning') {
         if (await this.boundary(jobId, signal, 'planning')) return;
         await this.transition(jobId, 'planning', 'Planung gestartet');
-        const plan = await this.planPhase(jobId, ticket, project, signal, log);
+        const plan = await this.planPhase(jobId, project, signal, log);
         this.deps.repos.jobs.update(jobId, { resumePhase: 'implementing' });
         const approvalReasons = this.approvalReasons(project, plan);
         if (approvalReasons.length > 0) {
@@ -176,12 +200,34 @@ export class JobPipeline {
             continue;
           }
           this.deps.repos.jobs.update(jobId, { resumePhase: 'review' });
+          if (project.autonomyMode === 'approve_diff') {
+            const job = this.mustJob(jobId);
+            const diff = await this.deps.git.diffAgainstBase(this.worktree(job), this.baseCommit(job));
+            this.recordArtifact(jobId, null, 'diff', null, diff);
+            // Ein während der Tests angefordertes Pause-Request bleibt erhalten und
+            // greift nach der Diff-Freigabe an der nächsten Phasengrenze (review).
+            await this.transition(
+              jobId,
+              'awaiting_diff_approval',
+              `Diff wartet auf Freigabe (Iteration ${iteration})`,
+            );
+            return;
+          }
           next = 'review';
         }
 
         if (await this.boundary(jobId, signal, 'review')) return;
         await this.transition(jobId, 'review', 'Review gestartet');
-        const review = await this.reviewPhase(jobId, ticket, project, iteration, signal, log);
+        const review = await this.reviewPhase(jobId, project, iteration, signal, log);
+        const visualSignoff = this.detectVisualSignoff(jobId, project, review);
+        if (visualSignoff) {
+          log.info(
+            { criteria: visualSignoff.length },
+            'Nur visuelle Akzeptanzkriterien offen — menschliche Abnahme statt Nacharbeit',
+          );
+          await this.completeForHandoff(jobId, ticket, project, visualSignoff);
+          return;
+        }
         const target = decideAfterReview(review.verdict, {
           reviewLoopCount: this.mustJob(jobId).reviewLoopCount,
           maxReviewLoops: this.deps.config.limits.maxReviewLoops,
@@ -305,7 +351,6 @@ export class JobPipeline {
 
   private async planPhase(
     jobId: string,
-    ticket: Ticket,
     project: Project,
     signal: AbortSignal,
     log: Logger,
@@ -313,7 +358,7 @@ export class JobPipeline {
     const job = this.mustJob(jobId);
     const baselineReport = this.buildTestReport(jobId, 0);
     const prompt = buildPlanPrompt({
-      ticket,
+      tickets: this.jobTickets(jobId),
       baseBranch: job.baseBranch,
       baselineReport,
     });
@@ -372,31 +417,41 @@ export class JobPipeline {
     const plan = this.deps.repos.artifacts.latestByType(jobId, 'plan')?.content;
     if (!plan) throw new NeedsHumanOutcome('Freigegebener Plan fehlt', 'planning');
     const approvalNote = this.deps.repos.artifacts.latestByType(jobId, 'approval')?.content ?? null;
+    // Human-Feedback nur injizieren, solange es frischer ist als die letzte
+    // Implementierungsrunde — deren Artifact „konsumiert" das Feedback.
+    const latestImplementation = this.deps.repos.artifacts.latestByType(jobId, 'implementation');
+    const latestFeedback = this.deps.repos.artifacts.latestByType(jobId, 'human_feedback');
+    const humanFeedback =
+      latestFeedback &&
+      (!latestImplementation || latestFeedback.createdAt > latestImplementation.createdAt)
+        ? latestFeedback.content
+        : null;
     const reviewFeedback = isRework
       ? (this.deps.repos.artifacts.latestByType(jobId, 'review')?.content ?? null)
       : null;
     const testFeedback = isRework ? this.buildTestReport(jobId, iteration - 1) : null;
     const prompt = buildImplementPrompt({
-      ticket,
+      tickets: this.jobTickets(jobId),
       plan,
       isRework,
       approvalNote,
+      humanFeedback,
       reviewFeedback,
       testFeedback,
     });
     const result = await this.runAgent(
       { jobId, phase: isRework ? 'rework' : 'implement', prompt, cwd: worktree },
-      this.deps.implementer,
+      this.implementer,
       signal,
     );
     if (result.status !== 'completed') {
       throw new Error(
-        `${displayAgentName(this.deps.implementer.name)}-Implementierung fehlgeschlagen: ${result.error ?? 'unbekannt'}`,
+        `${displayAgentName(this.implementer.name)}-Implementierung fehlgeschlagen: ${result.error ?? 'unbekannt'}`,
       );
     }
     if (result.truncated) {
       throw new NeedsHumanOutcome(
-        `${displayAgentName(this.deps.implementer.name)}-Ergebnis wurde gekappt; Änderungen bleiben zur Prüfung erhalten`,
+        `${displayAgentName(this.implementer.name)}-Ergebnis wurde gekappt; Änderungen bleiben zur Prüfung erhalten`,
       );
     }
     let implementation;
@@ -415,7 +470,7 @@ export class JobPipeline {
     const changed = await this.deps.git.changedFiles(worktree, base);
     if (!commit && changed.length === 0) {
       throw new NeedsHumanOutcome(
-        `${displayAgentName(this.deps.implementer.name)} hat keine Dateiänderungen vorgenommen`,
+        `${displayAgentName(this.implementer.name)} hat keine Dateiänderungen vorgenommen`,
       );
     }
     const head = await this.deps.git.currentHead(worktree);
@@ -652,7 +707,6 @@ export class JobPipeline {
 
   private async reviewPhase(
     jobId: string,
-    ticket: Ticket,
     project: Project,
     iteration: number,
     signal: AbortSignal,
@@ -668,7 +722,7 @@ export class JobPipeline {
     const implementationSummary =
       this.deps.repos.artifacts.latestByType(jobId, 'implementation')?.content ?? '(kein Bericht)';
     const prompt = buildReviewPrompt({
-      ticket,
+      tickets: this.jobTickets(jobId),
       plan,
       diff,
       changedFiles: changed
@@ -722,7 +776,58 @@ export class JobPipeline {
     return review;
   }
 
-  private async completeForHandoff(jobId: string, ticket: Ticket, project: Project): Promise<void> {
+  /** True, wenn das Projekt einen automatisierten Visual-/E2E-Prüflauf konfiguriert hat. */
+  private projectHasVisualCheck(project: Project): boolean {
+    return Object.values(project.commands).some(
+      (command) => typeof command === 'string' && VISUAL_RUNNER_RE.test(command),
+    );
+  }
+
+  /**
+   * Erkennt den Sonderfall „Review scheitert ausschließlich an rein visuellen
+   * Akzeptanzkriterien". In diesem Fall kann keine weitere Nacharbeit helfen (kein
+   * Browser/Screenshot-Abgleich, ein Diff-lesender Reviewer sieht keine Pixel), also
+   * wird an eine menschliche Sichtprüfung übergeben statt die Review-Schleife zu drehen.
+   * Gibt die betroffenen Kriterien zurück oder null, wenn regulär weitergearbeitet wird.
+   */
+  private detectVisualSignoff(
+    jobId: string,
+    project: Project,
+    review: ReviewResult,
+  ): string[] | null {
+    // Nur bei FAIL relevant; PASS läuft ohnehin in die normale Übergabe.
+    if (review.verdict !== 'FAIL') return null;
+    // Echte Code-Findings müssen behoben werden — keine Abkürzung.
+    if (review.findings.length > 0) return null;
+    // Es muss offene Kriterien geben, und ALLE müssen rein visuell sein.
+    if (!allCriteriaVisual(review.openAcceptanceCriteria)) return null;
+    // Hat das Projekt einen automatisierten Visual-Check, ist Sichtprüfung maschinell
+    // abgedeckt — dann nicht abkürzen, sondern regulär nacharbeiten lassen.
+    if (this.projectHasVisualCheck(project)) return null;
+    // Absicherung: nur greifen, wenn schon der Plan visuelle Akzeptanzkriterien deklariert
+    // hat (verhindert, dass ein spontan visuell klingendes Review die Schleife umgeht).
+    if (!this.planDeclaredVisualCriteria(jobId)) return null;
+    return classifyVisualCriteria(review.openAcceptanceCriteria);
+  }
+
+  /** Prüft, ob der freigegebene Plan mindestens ein visuelles Akzeptanzkriterium enthielt. */
+  private planDeclaredVisualCriteria(jobId: string): boolean {
+    const contract = this.deps.repos.artifacts.latestByType(jobId, 'plan_contract')?.content;
+    if (!contract) return false;
+    try {
+      const plan = parsePlanResult(contract);
+      return classifyVisualCriteria(plan.acceptanceCriteria).length > 0;
+    } catch {
+      return false;
+    }
+  }
+
+  private async completeForHandoff(
+    jobId: string,
+    ticket: Ticket,
+    project: Project,
+    visualSignoff: string[] = [],
+  ): Promise<void> {
     const job = this.mustJob(jobId);
     const worktree = this.worktree(job);
     const base = this.baseCommit(job);
@@ -750,6 +855,16 @@ export class JobPipeline {
       '',
       '## Verifikation',
       this.buildTestReport(jobId, this.mustJob(jobId).reviewLoopCount + 1),
+      ...(visualSignoff.length > 0
+        ? [
+            '',
+            '## Visuelle Abnahme erforderlich',
+            'Die automatisierten Prüfungen sind grün, aber die folgenden Akzeptanzkriterien sind',
+            'rein visuell und maschinell nicht verifizierbar. Bitte im Browser gegen das Design/den',
+            'Screenshot prüfen, bevor der Branch übernommen wird:',
+            ...visualSignoff.map((criterion) => `- ${criterion}`),
+          ]
+        : []),
       '',
       'Kein Push und kein Merge wurden ausgeführt. Repository und Branch müssen separat gesichert werden;',
       `optional: \`git -C "${project.repositoryPath}" bundle create <backup>.bundle ${job.branch ?? ''}\``,
@@ -777,22 +892,68 @@ export class JobPipeline {
       jobId,
       current.state,
       'ready_for_human',
-      'Review bestanden — bereit zur menschlichen Übergabe (kein Merge/Push)',
+      visualSignoff.length > 0
+        ? 'Automatische Prüfungen grün; visuelle Abnahme durch Menschen erforderlich (kein Merge/Push)'
+        : 'Review bestanden — bereit zur menschlichen Übergabe (kein Merge/Push)',
     );
     const summary = this.deps.repos.jobs.getSummary(jobId);
     if (summary) {
       this.deps.publisher.record({ type: 'job.ready_for_human', jobId, payload: { job: summary } });
     }
     if (this.deps.linear.commentsEnabled) {
-      try {
-        await this.deps.linear.postComment(
-          ticket.linearIssueId,
-          `Lokale Agentenarbeit für ${ticket.identifier} ist zur menschlichen Übergabe bereit.`,
-        );
-      } catch (error) {
-        this.deps.logger.warn({ err: error, jobId }, 'Linear-Kommentar fehlgeschlagen');
+      // Kommentar an jedes Ticket des Vorgangs.
+      for (const ticket of this.jobTickets(jobId)) {
+        try {
+          await this.deps.linear.postComment(
+            ticket.linearIssueId,
+            visualSignoff.length > 0
+              ? `Lokale Agentenarbeit für ${ticket.identifier} ist bereit; es ist noch eine visuelle Abnahme erforderlich (${visualSignoff.length} Kriterium/Kriterien).`
+              : `Lokale Agentenarbeit für ${ticket.identifier} ist zur menschlichen Übergabe bereit.`,
+          );
+        } catch (error) {
+          this.deps.logger.warn({ err: error, jobId }, 'Linear-Kommentar fehlgeschlagen');
+        }
       }
     }
+    await this.syncLinearState(project, jobId, 'onReadyForHuman', this.deps.logger.child({ jobId }));
+  }
+
+  /**
+   * Setzt den Linear-Workflow-State für ein Job-Ereignis, sofern das Projekt ein
+   * Mapping für das Team des Tickets konfiguriert hat. Fehler brechen die Pipeline nie.
+   */
+  private async syncLinearState(
+    project: Project,
+    jobId: string,
+    event: LinearSyncEvent,
+    log: Logger,
+  ): Promise<void> {
+    // Ein Vorgang umfasst mehrere Tickets — jedes einzeln synchronisieren.
+    for (const ticket of this.jobTickets(jobId)) {
+      try {
+        await this.deps.linear.syncState(
+          project.linearStateSync,
+          ticket.teamKey,
+          ticket.linearIssueId,
+          event,
+        );
+      } catch (error) {
+        log.warn(
+          { err: error, event, ticket: ticket.identifier },
+          'Linear-Status-Sync fehlgeschlagen',
+        );
+      }
+    }
+  }
+
+  /** Alle Tickets eines Jobs (primär zuerst) für Prompt-Aufbau und Linear-Sync. */
+  private jobTickets(jobId: string): Ticket[] {
+    const tickets: Ticket[] = [];
+    for (const id of this.deps.repos.jobs.listTicketIdsForJob(jobId)) {
+      const ticket = this.deps.repos.tickets.get(id);
+      if (ticket) tickets.push(ticket);
+    }
+    return tickets;
   }
 
   private async runAgent(

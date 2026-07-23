@@ -1,4 +1,4 @@
-import type { AgentName, Job, JobState, JobSummary, PipelinePhase } from '@agent/shared';
+import type { AgentName, Job, JobState, JobSummary, PipelinePhase, Ticket } from '@agent/shared';
 import type { AppDatabase } from '../db.js';
 import { newId, nowIso, toBool, toInt } from '../util.js';
 import { mapTicket, type TicketRow } from './tickets.js';
@@ -9,6 +9,8 @@ export interface JobRow {
   project_id: string;
   state: string;
   review_loop_count: number;
+  queue_priority: number;
+  queue_position: number;
   worktree_path: string | null;
   branch: string | null;
   base_branch: string;
@@ -35,6 +37,8 @@ export function mapJob(row: JobRow): Job {
     projectId: row.project_id,
     state: row.state as JobState,
     reviewLoopCount: row.review_loop_count,
+    queuePriority: row.queue_priority,
+    queuePosition: row.queue_position,
     worktreePath: row.worktree_path,
     branch: row.branch,
     baseBranch: row.base_branch,
@@ -64,6 +68,8 @@ export interface JobCreate {
 export interface JobPatch {
   state?: JobState;
   reviewLoopCount?: number;
+  queuePriority?: number;
+  queuePosition?: number;
   worktreePath?: string | null;
   branch?: string | null;
   baseCommitSha?: string | null;
@@ -88,6 +94,8 @@ export interface JobDeleteResult {
 const JOB_PATCH_COLUMNS: Record<keyof JobPatch, string> = {
   state: 'state',
   reviewLoopCount: 'review_loop_count',
+  queuePriority: 'queue_priority',
+  queuePosition: 'queue_position',
   worktreePath: 'worktree_path',
   branch: 'branch',
   baseCommitSha: 'base_commit_sha',
@@ -106,7 +114,8 @@ const JOB_PATCH_COLUMNS: Record<keyof JobPatch, string> = {
 
 const SUMMARY_SELECT = `
 SELECT
-  j.id, j.ticket_id, j.project_id, j.state, j.review_loop_count, j.worktree_path, j.branch,
+  j.id, j.ticket_id, j.project_id, j.state, j.review_loop_count, j.queue_priority,
+  j.queue_position, j.worktree_path, j.branch,
   j.base_branch, j.base_commit_sha, j.head_commit_sha, j.base_stale, j.resume_phase,
   j.plan_approved_at, j.current_agent, j.pause_requested, j.active_pgid, j.deadline_at, j.last_error,
   j.started_at, j.finished_at, j.created_at, j.updated_at,
@@ -149,6 +158,7 @@ function mapSummary(row: SummaryRow): JobSummary {
   return {
     ...mapJob(row),
     ticket: mapTicket(ticketRow),
+    additionalTickets: [],
     projectName: row.p_name,
     repositoryPath: row.p_repository_path,
   };
@@ -162,10 +172,10 @@ export class JobsRepository {
     const now = nowIso();
     this.db
       .prepare(
-        `INSERT INTO jobs (id, ticket_id, project_id, state, base_branch, created_at, updated_at)
-         VALUES (?, ?, ?, 'inbox', ?, ?, ?)`,
+        `INSERT INTO jobs (id, ticket_id, project_id, state, base_branch, queue_position, created_at, updated_at)
+         VALUES (?, ?, ?, 'inbox', ?, ?, ?, ?)`,
       )
-      .run(id, input.ticketId, input.projectId, input.baseBranch, now, now);
+      .run(id, input.ticketId, input.projectId, input.baseBranch, Date.now(), now, now);
     const job = this.get(id);
     if (!job) throw new Error(`Job nach Insert nicht auffindbar: ${id}`);
     return job;
@@ -198,13 +208,126 @@ export class JobsRepository {
     const rows = this.db
       .prepare(`${SUMMARY_SELECT} ORDER BY j.created_at ASC`)
       .all() as SummaryRow[];
-    return rows.map(mapSummary);
+    const summaries = rows.map(mapSummary);
+    const extra = this.additionalTicketsFor(summaries.map((s) => s.id));
+    for (const summary of summaries) summary.additionalTickets = extra.get(summary.id) ?? [];
+    return summaries;
   }
 
   getSummary(id: string): JobSummary | undefined {
     const row = this.db.prepare(`${SUMMARY_SELECT} WHERE j.id = ?`).get(id) as
       SummaryRow | undefined;
-    return row ? mapSummary(row) : undefined;
+    if (!row) return undefined;
+    const summary = mapSummary(row);
+    summary.additionalTickets = this.additionalTicketsFor([id]).get(id) ?? [];
+    return summary;
+  }
+
+  /** Lädt die sekundären Tickets (Vorgang) für mehrere Jobs, gruppiert nach Job-ID. */
+  private additionalTicketsFor(jobIds: string[]): Map<string, Ticket[]> {
+    const map = new Map<string, Ticket[]>();
+    if (jobIds.length === 0) return map;
+    const placeholders = jobIds.map(() => '?').join(', ');
+    const rows = this.db
+      .prepare(
+        `SELECT jt.job_id AS job_id, t.*
+           FROM job_tickets jt
+           JOIN tickets t ON t.id = jt.ticket_id
+          WHERE jt.job_id IN (${placeholders})
+          ORDER BY jt.position ASC, t.identifier ASC`,
+      )
+      .all(...jobIds) as Array<TicketRow & { job_id: string }>;
+    for (const row of rows) {
+      const list = map.get(row.job_id) ?? [];
+      list.push(mapTicket(row));
+      map.set(row.job_id, list);
+    }
+    return map;
+  }
+
+  /** Alle Ticket-IDs eines Jobs (primär zuerst, dann sekundäre nach Position). */
+  listTicketIdsForJob(jobId: string): string[] {
+    const job = this.get(jobId);
+    if (!job) return [];
+    const rows = this.db
+      .prepare('SELECT ticket_id FROM job_tickets WHERE job_id = ? ORDER BY position ASC')
+      .all(jobId) as Array<{ ticket_id: string }>;
+    return [job.ticketId, ...rows.map((r) => r.ticket_id)];
+  }
+
+  /**
+   * Führt mehrere Jobs zu einem Survivor zusammen: die Tickets der absorbierten
+   * Jobs (primär + evtl. bereits sekundär) werden sekundäre Tickets des Survivors,
+   * die absorbierten Job-Zeilen werden gelöscht. Tickets bleiben erhalten.
+   */
+  mergeInboxJobs(survivorId: string, absorbedIds: string[]): void {
+    if (!this.get(survivorId)) throw new Error(`Job nicht gefunden: ${survivorId}`);
+    this.db.transaction(() => {
+      const maxRow = this.db
+        .prepare('SELECT COALESCE(MAX(position), 0) AS max FROM job_tickets WHERE job_id = ?')
+        .get(survivorId) as { max: number };
+      let position = maxRow.max;
+      const insertLink = this.db.prepare(
+        'INSERT INTO job_tickets (job_id, ticket_id, position) VALUES (?, ?, ?)',
+      );
+      const moveLink = this.db.prepare(
+        'UPDATE job_tickets SET job_id = ?, position = ? WHERE job_id = ? AND ticket_id = ?',
+      );
+      for (const absorbedId of absorbedIds) {
+        if (absorbedId === survivorId) continue;
+        const absorbed = this.get(absorbedId);
+        if (!absorbed) throw new Error(`Job nicht gefunden: ${absorbedId}`);
+        // Sekundäre Tickets des absorbierten Jobs zuerst übernehmen (FK-sicher).
+        const secondary = this.db
+          .prepare('SELECT ticket_id FROM job_tickets WHERE job_id = ? ORDER BY position ASC')
+          .all(absorbedId) as Array<{ ticket_id: string }>;
+        for (const { ticket_id } of secondary) {
+          position += 1;
+          moveLink.run(survivorId, position, absorbedId, ticket_id);
+        }
+        // Primäres Ticket des absorbierten Jobs wird sekundäres Ticket des Survivors.
+        position += 1;
+        insertLink.run(survivorId, absorbed.ticketId, position);
+        this.deleteRunData(absorbedId);
+        this.db.prepare('DELETE FROM jobs WHERE id = ?').run(absorbedId);
+      }
+      this.db.prepare('UPDATE jobs SET updated_at = ? WHERE id = ?').run(nowIso(), survivorId);
+    })();
+  }
+
+  /** Löst ein sekundäres Ticket aus einem Vorgang (nur die Verknüpfung). */
+  removeSecondaryTicket(jobId: string, ticketId: string): void {
+    this.db
+      .prepare('DELETE FROM job_tickets WHERE job_id = ? AND ticket_id = ?')
+      .run(jobId, ticketId);
+    this.db.prepare('UPDATE jobs SET updated_at = ? WHERE id = ?').run(nowIso(), jobId);
+  }
+
+  /** Löst ein sekundäres Ticket atomar und legt dafür wieder einen Inbox-Job an. */
+  ungroupSecondaryTicket(
+    jobId: string,
+    ticketId: string,
+    input: { projectId: string; baseBranch: string },
+  ): Job {
+    let newJobId = '';
+    const now = nowIso();
+    this.db.transaction(() => {
+      const removed = this.db
+        .prepare('DELETE FROM job_tickets WHERE job_id = ? AND ticket_id = ?')
+        .run(jobId, ticketId);
+      if (removed.changes !== 1) throw new Error(`Ticket nicht im Vorgang: ${ticketId}`);
+      newJobId = newId();
+      this.db
+        .prepare(
+          `INSERT INTO jobs (id, ticket_id, project_id, state, base_branch, queue_position, created_at, updated_at)
+           VALUES (?, ?, ?, 'inbox', ?, ?, ?, ?)`,
+        )
+        .run(newJobId, ticketId, input.projectId, input.baseBranch, Date.now(), now, now);
+      this.db.prepare('UPDATE jobs SET updated_at = ? WHERE id = ?').run(now, jobId);
+    })();
+    const job = this.get(newJobId);
+    if (!job) throw new Error(`Job nach Ungroup nicht auffindbar: ${newJobId}`);
+    return job;
   }
 
   listByStates(states: readonly JobState[]): Job[] {
@@ -213,6 +336,17 @@ export class JobsRepository {
     const rows = this.db
       .prepare(`SELECT * FROM jobs WHERE state IN (${placeholders}) ORDER BY created_at ASC`)
       .all(...states) as JobRow[];
+    return rows.map(mapJob);
+  }
+
+  /** Jobs eines Zustands in Queue-Reihenfolge (Priorität, dann manuelle Position). */
+  listByStateOrdered(state: JobState): Job[] {
+    const rows = this.db
+      .prepare(
+        `SELECT * FROM jobs WHERE state = ?
+         ORDER BY queue_priority DESC, queue_position ASC, created_at ASC`,
+      )
+      .all(state) as JobRow[];
     return rows.map(mapJob);
   }
 
@@ -261,6 +395,7 @@ export class JobsRepository {
     if (!this.get(id)) throw new Error(`Job nicht gefunden: ${id}`);
     this.db.transaction(() => {
       this.deleteRunData(id);
+      this.db.prepare('DELETE FROM job_tickets WHERE job_id = ?').run(id);
       const gitReset = options.clearGitMetadata
         ? ', worktree_path = NULL, branch = NULL, base_commit_sha = NULL, head_commit_sha = NULL'
         : '';
@@ -279,22 +414,39 @@ export class JobsRepository {
     return job;
   }
 
-  /** Löscht einen Job samt Laufdaten; ein nicht mehr referenziertes Ticket wird mit entfernt. */
+  /**
+   * Löscht einen Job samt Laufdaten; nicht mehr referenzierte Tickets (primär und
+   * bei einem Vorgang auch die sekundären) werden mit entfernt.
+   */
   deleteWithRelations(id: string): JobDeleteResult {
     const job = this.get(id);
     if (!job) throw new Error(`Job nicht gefunden: ${id}`);
     let ticketDeleted = false;
     this.db.transaction(() => {
+      const secondary = this.db
+        .prepare('SELECT ticket_id FROM job_tickets WHERE job_id = ?')
+        .all(id) as Array<{ ticket_id: string }>;
+      this.db.prepare('DELETE FROM job_tickets WHERE job_id = ?').run(id);
       this.deleteRunData(id);
       this.db.prepare('DELETE FROM jobs WHERE id = ?').run(id);
-      const remaining = this.db
-        .prepare('SELECT COUNT(*) AS count FROM jobs WHERE ticket_id = ?')
-        .get(job.ticketId) as { count: number };
-      if (remaining.count === 0) {
-        this.db.prepare('DELETE FROM tickets WHERE id = ?').run(job.ticketId);
-        ticketDeleted = true;
-      }
+      if (this.deleteTicketIfOrphan(job.ticketId)) ticketDeleted = true;
+      for (const { ticket_id } of secondary) this.deleteTicketIfOrphan(ticket_id);
     })();
     return { ticketId: job.ticketId, ticketDeleted };
+  }
+
+  /** Löscht ein Ticket, sofern es von keinem Job (primär oder sekundär) mehr referenziert wird. */
+  private deleteTicketIfOrphan(ticketId: string): boolean {
+    const jobRefs = this.db
+      .prepare('SELECT COUNT(*) AS count FROM jobs WHERE ticket_id = ?')
+      .get(ticketId) as { count: number };
+    const linkRefs = this.db
+      .prepare('SELECT COUNT(*) AS count FROM job_tickets WHERE ticket_id = ?')
+      .get(ticketId) as { count: number };
+    if (jobRefs.count === 0 && linkRefs.count === 0) {
+      this.db.prepare('DELETE FROM tickets WHERE id = ?').run(ticketId);
+      return true;
+    }
+    return false;
   }
 }

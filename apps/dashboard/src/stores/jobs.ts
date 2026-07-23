@@ -1,7 +1,7 @@
 import { defineStore } from 'pinia';
 import { computed, ref } from 'vue';
 import type { AnyWsEnvelope, JobState, JobSummary } from '@agent/shared';
-import { JOB_STATES } from '@agent/shared';
+import { JOB_STATES, compareQueueOrder } from '@agent/shared';
 import { api } from '@/api/client';
 
 export const useJobsStore = defineStore('jobs', () => {
@@ -21,6 +21,9 @@ export const useJobsStore = defineStore('jobs', () => {
       JobSummary[]
     >;
     for (const job of jobs.value) map[job.state].push(job);
+    for (const state of JOB_STATES) {
+      map[state].sort(compareQueueOrder);
+    }
     return map;
   });
 

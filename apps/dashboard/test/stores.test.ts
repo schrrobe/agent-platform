@@ -10,6 +10,8 @@ function makeJob(id: string, state: JobSummary['state'], createdAt: string): Job
     projectId: 'p1',
     state,
     reviewLoopCount: 0,
+    queuePriority: 0,
+    queuePosition: 0,
     worktreePath: null,
     branch: null,
     baseBranch: 'main',
@@ -29,6 +31,7 @@ function makeJob(id: string, state: JobSummary['state'], createdAt: string): Job
     updatedAt: createdAt,
     projectName: 'Demo',
     repositoryPath: '/repo',
+    additionalTickets: [],
     ticket: {
       id: `t-${id}`,
       projectId: 'p1',

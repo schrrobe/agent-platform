@@ -16,6 +16,7 @@
   "dependencies": {
     "@agent/shared": "workspace:*",
     "@atlaskit/pragmatic-drag-and-drop": "catalog:",
+    "@atlaskit/pragmatic-drag-and-drop-hitbox": "catalog:",
     "d3": "^7.9.0",
     "dompurify": "catalog:",
     "marked": "catalog:",

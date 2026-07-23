@@ -37,7 +37,7 @@ describe('Pipeline E2E (Fake-Claude/-Codex)', () => {
 
     const finished = harness.ctx.repos.jobs.get(job.id)!;
     const suffix = job.id.replaceAll('-', '');
-    expect(finished.branch).toBe('feature/app-1/ticket-app-1');
+    expect(finished.branch).toBe('feature/app-1-ticket-app-1');
     expect(finished.worktreePath).toBe(path.join(harness.worktreeRoot, `app-1-${suffix}`));
     expect(finished.baseCommitSha).toMatch(/^[0-9a-f]{40}$/);
     expect(finished.headCommitSha).toMatch(/^[0-9a-f]{40}$/);
@@ -121,6 +121,51 @@ describe('Pipeline E2E (Fake-Claude/-Codex)', () => {
     expect(events.some((e) => e.type === 'review.failed')).toBe(true);
     expect(events.some((e) => e.type === 'review.passed')).toBe(true);
     expect(events.filter((e) => e.toState === 'rework')).toHaveLength(1);
+  });
+
+  it('übergibt bei rein visuellem Review-FAIL an die menschliche Sichtprüfung statt zu schleifen', async () => {
+    const visualCriterion = 'Der Abstand zwischen Chevron und Button ist sichtbar reduziert';
+    harness = await createHarness({
+      reviewSequence: 'FAIL',
+      maxReviewLoops: 3,
+      planAcceptanceCriteria: [visualCriterion],
+      reviewOpenCriteria: [visualCriterion],
+    });
+    const job = harness.seedJob('APP-30');
+    await harness.ctx.jobs.start(job.id);
+    const state = await harness.waitForState(job.id, ['ready_for_human', 'failed', 'needs_human']);
+    expect(state, harness.ctx.repos.jobs.get(job.id)?.lastError ?? '').toBe('ready_for_human');
+
+    const finished = harness.ctx.repos.jobs.get(job.id)!;
+    // Keine Nacharbeit — es wurde nicht in die Review-Schleife eingetreten.
+    expect(finished.reviewLoopCount).toBe(0);
+    const events = harness.ctx.repos.jobEvents.listByJob(job.id);
+    expect(events.some((e) => e.toState === 'rework')).toBe(false);
+
+    // Genau ein Review (FAIL), danach direkt Übergabe.
+    const reviews = harness.ctx.repos.reviewIterations.listByJob(job.id);
+    expect(reviews.map((r) => r.verdict)).toEqual(['FAIL']);
+
+    // Das Handoff-Artefakt weist die visuelle Abnahme explizit aus.
+    const handoff = harness.ctx.repos.artifacts.listByJob(job.id).find((a) => a.type === 'handoff');
+    expect(handoff?.content).toContain('Visuelle Abnahme erforderlich');
+    expect(handoff?.content).toContain(visualCriterion);
+  });
+
+  it('schleift bei einem echten Finding trotz visuellem Kriterium regulär in die Nacharbeit', async () => {
+    // FAIL mit Finding (kein reviewOpenCriteria) → normale Rework-Schleife, dann PASS.
+    harness = await createHarness({
+      reviewSequence: 'FAIL,PASS',
+      maxReviewLoops: 3,
+      planAcceptanceCriteria: ['Der Abstand ist reduziert'],
+    });
+    const job = harness.seedJob('APP-31');
+    await harness.ctx.jobs.start(job.id);
+    expect(await harness.waitForState(job.id, ['ready_for_human', 'failed', 'needs_human'])).toBe(
+      'ready_for_human',
+    );
+    // Es wurde genacharbeitet — die visuelle Abkürzung greift bei echten Findings nicht.
+    expect(harness.ctx.repos.jobs.get(job.id)?.reviewLoopCount).toBe(1);
   });
 
   it('eskaliert nach Erreichen des Review-Limits zu needs_human', async () => {
@@ -309,7 +354,7 @@ describe('Pipeline E2E (Fake-Claude/-Codex)', () => {
     await harness.ctx.jobs.start(job.id);
     expect(await harness.waitForState(job.id, ['needs_human'])).toBe('needs_human');
     const persistedBranch = harness.ctx.repos.jobs.get(job.id)?.branch;
-    expect(persistedBranch).toMatch(/^feature\/app-910\//);
+    expect(persistedBranch).toMatch(/^feature\/app-910-/);
 
     const ticket = harness.ctx.repos.tickets.get(job.ticketId)!;
     harness.ctx.repos.tickets.upsert({

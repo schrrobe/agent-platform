@@ -8,7 +8,7 @@ export type CommandKey = (typeof COMMAND_KEYS)[number];
 export const CHECK_COMMAND_KEYS = ['format', 'lint', 'typecheck', 'test', 'build'] as const;
 export type CheckCommandKey = (typeof CHECK_COMMAND_KEYS)[number];
 
-export const AUTONOMY_MODES = ['full_auto', 'approve_plan'] as const;
+export const AUTONOMY_MODES = ['full_auto', 'approve_plan', 'approve_diff'] as const;
 export type AutonomyMode = (typeof AUTONOMY_MODES)[number];
 
 export const TEST_EXECUTION_MODES = ['sandboxed', 'trusted'] as const;
@@ -26,6 +26,30 @@ export type PipelinePhase = (typeof PIPELINE_PHASES)[number];
 /** Pro Projekt erlaubte Prüf-/Build-Befehle (Strings ohne Shell-Features, siehe ADR-014). */
 export type ProjectCommands = Partial<Record<CommandKey, string>>;
 
+/**
+ * Optionales Mapping von Job-Ereignissen auf Linear-Workflow-States (pro Projekt).
+ * Greift nur für Tickets, deren teamKey mit `teamKey` übereinstimmt.
+ */
+export interface LinearStateSyncConfig {
+  teamKey: string;
+  /** State-ID bei Job-Start (preflight), null = nicht ändern. */
+  onStart: string | null;
+  /** State-ID bei Übergabe an den Menschen (ready_for_human), null = nicht ändern. */
+  onReadyForHuman: string | null;
+  /** State-ID bei Abschluss (done), null = nicht ändern. */
+  onDone: string | null;
+}
+
+export type LinearSyncEvent = 'onStart' | 'onReadyForHuman' | 'onDone';
+
+/** Ein Workflow-State eines Linear-Teams (für die Sync-Konfiguration). */
+export interface LinearWorkflowState {
+  id: string;
+  name: string;
+  type: string;
+  position: number;
+}
+
 export interface Project {
   id: string;
   name: string;
@@ -39,6 +63,7 @@ export interface Project {
   maxChangedFiles: number;
   maxDiffBytes: number;
   blockedPaths: string[];
+  linearStateSync: LinearStateSyncConfig | null;
   active: boolean;
   createdAt: IsoDateTime;
   updatedAt: IsoDateTime;
@@ -74,6 +99,10 @@ export interface Job {
   projectId: string;
   state: JobState;
   reviewLoopCount: number;
+  /** Queue-Priorität: 1=hoch, 0=normal, -1=niedrig. */
+  queuePriority: number;
+  /** Manuelle Reihenfolge innerhalb gleicher Priorität (Fractional Indexing). */
+  queuePosition: number;
   worktreePath: string | null;
   branch: string | null;
   baseBranch: string;
@@ -95,7 +124,10 @@ export interface Job {
 
 /** Board-/Listendarstellung: Job inklusive Ticket- und Projektkontext. */
 export interface JobSummary extends Job {
+  /** Primäres Ticket (treibt Branch/Worktree/Titel). */
   ticket: Ticket;
+  /** Zusätzliche Tickets desselben Vorgangs (leer bei Einzel-Ticket-Jobs). */
+  additionalTickets: Ticket[];
   projectName: string;
   repositoryPath: string;
 }
@@ -116,6 +148,22 @@ export interface LinearAssignedIssue {
   alreadyImported: boolean;
   /** Projekt-ID des bereits importierten Tickets, sonst null. */
   existingProjectId: string | null;
+}
+
+export type WorktreeStatus = 'active' | 'bound' | 'orphaned';
+
+/** Ein Git-Worktree eines Projekts mit Wartungs-Metadaten. */
+export interface WorktreeInfo {
+  projectId: string;
+  projectName: string;
+  path: string;
+  branch: string | null;
+  sizeKb: number | null;
+  dirty: boolean;
+  status: WorktreeStatus;
+  jobId: string | null;
+  jobState: JobState | null;
+  ticketIdentifier: string | null;
 }
 
 export interface TicketImportFailure {
@@ -164,6 +212,7 @@ export type ArtifactType =
   | 'plan'
   | 'plan_contract'
   | 'approval'
+  | 'human_feedback'
   | 'implementation'
   | 'review'
   | 'summary'

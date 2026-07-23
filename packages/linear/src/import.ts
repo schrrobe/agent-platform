@@ -1,12 +1,17 @@
 import { LinearClient } from '@linear/sdk';
 import { IDENTIFIER_RE } from '@agent/shared';
+import type {
+  LinearStateSyncConfig,
+  LinearSyncEvent,
+  LinearWorkflowState,
+} from '@agent/shared';
 
 /**
- * Linear liefert Ticketdaten und erlaubt die explizite Aktualisierung einer
- * Beschreibung sowie optionale Kommentare. Statusänderungen finden nie statt.
- * Der Client ist als schmales strukturelles
- * Interface abstrahiert, damit Tests ohne SDK-Mocks auskommen und SDK-Major-
- * Bumps (Linear released aggressiv) nur diese Datei betreffen.
+ * Linear liefert Ticketdaten und erlaubt die explizite Aktualisierung von
+ * Beschreibung und — nur bei explizit konfiguriertem Projekt-Mapping — dem
+ * Workflow-State, sowie optionale Kommentare. Der Client ist als schmales
+ * strukturelles Interface abstrahiert, damit Tests ohne SDK-Mocks auskommen und
+ * SDK-Major-Bumps (Linear released aggressiv) nur diese Datei betreffen.
  */
 
 export class LinearError extends Error {
@@ -57,7 +62,24 @@ export interface LinearClientLike {
   issue(id: string): Promise<LinearIssueLike>;
   issues?(variables?: LinearIssuesQueryLike): Promise<LinearIssueConnectionLike>;
   createComment?(input: { issueId: string; body: string }): Promise<unknown>;
-  updateIssue?(id: string, input: { description: string }): Promise<{ success: boolean }>;
+  updateIssue?(
+    id: string,
+    input: { description?: string; stateId?: string },
+  ): Promise<{ success: boolean }>;
+  teamStates?(teamKey: string): Promise<LinearWorkflowState[]>;
+}
+
+/**
+ * Ermittelt den Ziel-State für ein Job-Ereignis. Liefert null, wenn kein Sync
+ * konfiguriert ist, der teamKey nicht passt oder das Ereignis nicht gemappt ist.
+ */
+export function resolveLinearSyncState(
+  config: LinearStateSyncConfig | null,
+  teamKey: string | null,
+  event: LinearSyncEvent,
+): string | null {
+  if (!config || !teamKey || config.teamKey !== teamKey) return null;
+  return config[event];
 }
 
 /** Ticketdaten, wie sie lokal gespeichert werden (ohne Projektzuordnung). */
@@ -99,6 +121,18 @@ export function createLinearClientAdapter(apiKey: string): LinearClientLike {
       client.issues(variables as never) as unknown as Promise<LinearIssueConnectionLike>,
     createComment: (input) => client.createComment(input),
     updateIssue: (id, input) => client.updateIssue(id, input),
+    teamStates: async (teamKey) => {
+      const teams = await client.teams({ filter: { key: { eq: teamKey } } });
+      const team = teams.nodes[0];
+      if (!team) return [];
+      const states = await team.states();
+      return states.nodes.map((state) => ({
+        id: state.id,
+        name: state.name,
+        type: state.type,
+        position: state.position,
+      }));
+    },
   };
 }
 
@@ -259,9 +293,62 @@ export class LinearService {
     }
   }
 
+  /** Listet die Workflow-States eines Teams (nach Position sortiert), für die Sync-Konfiguration. */
+  async listTeamStates(teamKey: string): Promise<LinearWorkflowState[]> {
+    const client = this.requireClient();
+    if (!client.teamStates) {
+      throw new LinearError('Der konfigurierte Linear-Client unterstützt keine Team-States.');
+    }
+    try {
+      const states = await client.teamStates(teamKey);
+      return [...states].sort((a, b) => a.position - b.position);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      throw new LinearError(`Linear-States konnten nicht geladen werden: ${message}`, message);
+    }
+  }
+
+  /**
+   * Setzt den Workflow-State eines Tickets. Nur bei explizit konfiguriertem
+   * Projekt-Mapping verwendet (siehe resolveLinearSyncState).
+   */
+  async updateState(linearIssueId: string, stateId: string): Promise<void> {
+    const client = this.requireClient();
+    if (!client.updateIssue) {
+      throw new LinearError(
+        'Der konfigurierte Linear-Client unterstützt keine Ticket-Aktualisierungen.',
+      );
+    }
+    try {
+      const result = await client.updateIssue(linearIssueId, { stateId });
+      if (!result.success) {
+        throw new Error('Linear hat die Statusänderung nicht bestätigt');
+      }
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      throw new LinearError(`Linear-Status konnte nicht gesetzt werden: ${message}`, message);
+    }
+  }
+
+  /**
+   * Wendet das konfigurierte Status-Mapping für ein Job-Ereignis an. Liefert true,
+   * wenn tatsächlich ein Status gesetzt wurde; wirft bei API-Fehlern (der Aufrufer
+   * entscheidet über Logging/Schlucken). Einziger Ort der Sync-Mechanik.
+   */
+  async syncState(
+    config: LinearStateSyncConfig | null,
+    teamKey: string | null,
+    linearIssueId: string,
+    event: LinearSyncEvent,
+  ): Promise<boolean> {
+    const stateId = resolveLinearSyncState(config, teamKey, event);
+    if (!stateId) return false;
+    await this.updateState(linearIssueId, stateId);
+    return true;
+  }
+
   /**
    * Optionaler Kommentar nach Linear — nur aktiv, wenn LINEAR_WRITE_COMMENTS=true.
-   * Es werden niemals Status, Titel oder andere Felder verändert.
    */
   async postComment(linearIssueId: string, body: string): Promise<'written' | 'skipped'> {
     if (!this.writeComments) return 'skipped';

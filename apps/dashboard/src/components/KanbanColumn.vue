@@ -3,11 +3,23 @@ import { ref } from 'vue';
 import type { JobState, JobSummary } from '@agent/shared';
 import type { ColumnDef } from '@/lib/board';
 import { canDropTo } from '@/lib/board';
-import { useDropTarget, type CardDragData } from '@/composables/dnd';
+import { useDropTarget, type CardDragData, type Edge } from '@/composables/dnd';
 import TicketCard from './TicketCard.vue';
 
 const props = defineProps<{ column: ColumnDef; jobs: JobSummary[]; showState?: boolean }>();
-const emit = defineEmits<{ move: [jobId: string, to: JobState]; open: [jobId: string] }>();
+const emit = defineEmits<{
+  move: [jobId: string, to: JobState];
+  open: [jobId: string];
+  reorder: [jobId: string, afterJobId: string | null];
+}>();
+
+function onReorder(draggedId: string, targetId: string, edge: Edge | null): void {
+  const ordered = props.jobs.filter((job) => job.id !== draggedId);
+  const idx = ordered.findIndex((job) => job.id === targetId);
+  if (idx < 0) return;
+  const afterJobId = edge === 'top' ? (ordered[idx - 1]?.id ?? null) : targetId;
+  emit('reorder', draggedId, afterJobId);
+}
 
 const columnRef = ref<HTMLElement | null>(null);
 const over = ref(false);
@@ -45,6 +57,7 @@ useDropTarget(columnRef, {
         :job="job"
         :show-state="showState"
         @open="emit('open', $event)"
+        @reorder="onReorder"
       />
       <p v-if="jobs.length === 0" class="empty faint">—</p>
     </div>

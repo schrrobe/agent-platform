@@ -3,7 +3,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import type { ProcessHandle, ProcessResult, ProcessRunner, ProcessSpec } from '@agent/shared';
-import { GitError, GitService } from '../src/git-service.js';
+import { GitConflictError, GitError, GitService } from '../src/git-service.js';
 
 function makeResult(partial: Partial<ProcessResult> = {}): ProcessResult {
   return {
@@ -90,7 +90,7 @@ function baseResponder(overrides: Responder = () => undefined): Responder {
 
 describe('allocateBranch', () => {
   it('weicht bei einer vorhandenen menschlichen Branch-Kollision stabil aus', async () => {
-    const base = 'feature/app-123/login-reparieren';
+    const base = 'feature/app-123-login-reparieren';
     const { git } = service(
       baseResponder((spec) => {
         if (hasArgs(spec, 'show-ref', `refs/heads/${base}`)) return { exitCode: 0 };
@@ -116,7 +116,7 @@ describe('ensureWorktree', () => {
     });
 
     expect(result.created).toBe(true);
-    expect(result.branch).toBe(`feature/app-123/${JOB_SUFFIX}`);
+    expect(result.branch).toBe(`feature/app-123-${JOB_SUFFIX}`);
     expect(result.worktreePath).toBe(path.join(worktreeRoot, `app-123-${JOB_SUFFIX}`));
     expect(result.baseCommit).toBe('base123');
 
@@ -129,7 +129,7 @@ describe('ensureWorktree', () => {
       'worktree',
       'add',
       '-b',
-      `feature/app-123/${JOB_SUFFIX}`,
+      `feature/app-123-${JOB_SUFFIX}`,
       path.join(worktreeRoot, `app-123-${JOB_SUFFIX}`),
       'base123',
     ]);
@@ -140,7 +140,7 @@ describe('ensureWorktree', () => {
   it('bindet den bekannten Branch eines begonnenen Jobs ohne -b erneut an', async () => {
     const { git, runner } = service(
       baseResponder((spec) => {
-        if (hasArgs(spec, 'show-ref', `refs/heads/feature/app-123/${JOB_SUFFIX}`))
+        if (hasArgs(spec, 'show-ref', `refs/heads/feature/app-123-${JOB_SUFFIX}`))
           return { exitCode: 0 };
         return undefined;
       }),
@@ -162,7 +162,7 @@ describe('ensureWorktree', () => {
       'worktree',
       'add',
       path.join(worktreeRoot, `app-123-${JOB_SUFFIX}`),
-      `feature/app-123/${JOB_SUFFIX}`,
+      `feature/app-123-${JOB_SUFFIX}`,
     ]);
   });
 
@@ -174,7 +174,7 @@ describe('ensureWorktree', () => {
       path.join(worktreePath, '.agent', 'OWNER.json'),
       JSON.stringify({
         jobId: JOB_ID,
-        branch: `feature/app-123/${JOB_SUFFIX}`,
+        branch: `feature/app-123-${JOB_SUFFIX}`,
         repositoryPath: repoDir,
         baseCommit: 'base123',
       }),
@@ -183,7 +183,7 @@ describe('ensureWorktree', () => {
       baseResponder((spec) => {
         if (hasArgs(spec, 'worktree', 'list')) {
           return {
-            stdout: `worktree ${repoDir}\nHEAD aaa\nbranch refs/heads/main\n\nworktree ${worktreePath}\nHEAD bbb\nbranch refs/heads/feature/app-123/${JOB_SUFFIX}\n`,
+            stdout: `worktree ${repoDir}\nHEAD aaa\nbranch refs/heads/main\n\nworktree ${worktreePath}\nHEAD bbb\nbranch refs/heads/feature/app-123-${JOB_SUFFIX}\n`,
           };
         }
         return undefined;
@@ -205,7 +205,7 @@ describe('ensureWorktree', () => {
       baseResponder((spec) => {
         if (hasArgs(spec, 'worktree', 'list')) {
           return {
-            stdout: `worktree ${path.join(tmp, 'anderswo')}\nHEAD bbb\nbranch refs/heads/feature/app-123/${JOB_SUFFIX}\n`,
+            stdout: `worktree ${path.join(tmp, 'anderswo')}\nHEAD bbb\nbranch refs/heads/feature/app-123-${JOB_SUFFIX}\n`,
           };
         }
         return undefined;
@@ -434,7 +434,7 @@ describe('kontrollierte Worktree-Bereinigung', () => {
     const worktreePath = path.join(worktreeRoot, 'app-123-owned');
     const owner = {
       jobId: JOB_ID,
-      branch: `feature/app-123/${JOB_SUFFIX}`,
+      branch: `feature/app-123-${JOB_SUFFIX}`,
       repositoryPath: repoDir,
       baseCommit: 'base123',
     };
@@ -542,5 +542,87 @@ describe('Diff und Status', () => {
       return undefined;
     });
     expect(await git.binaryChangedFiles(repoDir, 'main')).toEqual(['assets/image.png']);
+  });
+});
+
+describe('readWorktreeOwner', () => {
+  it('liest gültige Eigentümerdaten', () => {
+    const wt = path.join(worktreeRoot, 'app-1');
+    fs.mkdirSync(path.join(wt, '.agent'), { recursive: true });
+    fs.writeFileSync(
+      path.join(wt, '.agent', 'OWNER.json'),
+      JSON.stringify({ jobId: 'j1', branch: 'b', repositoryPath: repoDir, baseCommit: 'c1' }),
+    );
+    const { git } = service(baseResponder());
+    expect(git.readWorktreeOwner(wt)).toEqual({
+      jobId: 'j1',
+      branch: 'b',
+      repositoryPath: repoDir,
+      baseCommit: 'c1',
+    });
+  });
+
+  it('liefert null bei fehlender oder kaputter Datei', () => {
+    const wt = path.join(worktreeRoot, 'app-2');
+    fs.mkdirSync(path.join(wt, '.agent'), { recursive: true });
+    const { git } = service(baseResponder());
+    expect(git.readWorktreeOwner(wt)).toBeNull();
+    fs.writeFileSync(path.join(wt, '.agent', 'OWNER.json'), '{ kaputt');
+    expect(git.readWorktreeOwner(wt)).toBeNull();
+  });
+});
+
+describe('removeUnownedWorktree', () => {
+  const wtName = 'app-orphan';
+  function registeredResponder(clean = true): Responder {
+    const wt = path.join(worktreeRoot, wtName);
+    return baseResponder((spec) => {
+      if (hasArgs(spec, 'worktree', 'list')) {
+        return { stdout: `worktree ${wt}\nHEAD abc\nbranch refs/heads/feature/x\n\n` };
+      }
+      if (hasArgs(spec, 'status')) return { stdout: clean ? '' : 'M x\n' };
+      if (hasArgs(spec, 'worktree', 'remove')) return { stdout: '' };
+      return undefined;
+    });
+  }
+
+  it('entfernt einen sauberen, registrierten, verwaisten Worktree', async () => {
+    const wt = path.join(worktreeRoot, wtName);
+    fs.mkdirSync(wt, { recursive: true });
+    const { git, runner } = service(registeredResponder(true));
+    await git.removeUnownedWorktree(repoDir, wt, { worktreeRoot });
+    expect(runner.argsOfCall((spec) => hasArgs(spec, 'worktree', 'remove'))).toBeDefined();
+  });
+
+  it('verweigert schmutzige Worktrees (kein --force)', async () => {
+    const wt = path.join(worktreeRoot, wtName);
+    fs.mkdirSync(wt, { recursive: true });
+    const { git } = service(registeredResponder(false));
+    await expect(git.removeUnownedWorktree(repoDir, wt, { worktreeRoot })).rejects.toThrow(
+      GitConflictError,
+    );
+  });
+
+  it('verweigert Pfade außerhalb des Worktree-Roots', async () => {
+    const outside = path.join(tmp, 'woanders');
+    const { git } = service(registeredResponder(true));
+    await expect(git.removeUnownedWorktree(repoDir, outside, { worktreeRoot })).rejects.toThrow(
+      GitConflictError,
+    );
+  });
+
+  it('verweigert nicht registrierte Worktrees', async () => {
+    const wt = path.join(worktreeRoot, wtName);
+    const { git } = service(baseResponder());
+    await expect(git.removeUnownedWorktree(repoDir, wt, { worktreeRoot })).rejects.toThrow(
+      GitConflictError,
+    );
+  });
+
+  it('verweigert das Haupt-Repository', async () => {
+    const { git } = service(registeredResponder(true));
+    await expect(
+      git.removeUnownedWorktree(repoDir, repoDir, { worktreeRoot: tmp }),
+    ).rejects.toThrow(GitConflictError);
   });
 });

@@ -30,7 +30,7 @@ describe('identifierToSlug / branchForIdentifier', () => {
     expect(identifierToSlug('APP-123')).toBe('app-123');
     expect(branchForIdentifier('APP-123')).toBe('feature/app-123');
     expect(branchForTicket('APP-123', 'Login für größere Kunden', 'fix')).toBe(
-      'fix/app-123/login-fur-grossere-kunden',
+      'fix/app-123-login-fur-grossere-kunden',
     );
     expect(ticketTitleToSlug('  Größe & Übersicht  ')).toBe('grosse-ubersicht');
   });

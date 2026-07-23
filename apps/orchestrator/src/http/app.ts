@@ -6,8 +6,10 @@ import fastifyStatic from '@fastify/static';
 import type { AppContext } from '../context.js';
 import { registerErrorHandler } from './errors.js';
 import { registerProjectRoutes } from './routes/projects.js';
+import { registerSettingsRoutes } from './routes/settings.js';
 import type { ProjectRouteOptions } from './routes/projects.js';
 import { registerJobRoutes } from './routes/jobs.js';
+import { registerMaintenanceRoutes } from './routes/maintenance.js';
 import { registerStatsRoutes } from './routes/stats.js';
 import { registerWebSocket } from './ws.js';
 
@@ -35,7 +37,9 @@ export async function buildApp(
   }));
 
   registerProjectRoutes(app, ctx, options.projectRoutes);
+  registerSettingsRoutes(app, ctx);
   registerJobRoutes(app, ctx);
+  registerMaintenanceRoutes(app, ctx);
   registerStatsRoutes(app, ctx);
   await registerWebSocket(app, ctx);
 

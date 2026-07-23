@@ -43,6 +43,7 @@ const envSchema = z.object({
   CLAUDE_EFFORT: z.enum(['low', 'medium', 'high']).default('high'),
   CODEX_EFFORT: z.enum(['low', 'medium', 'high']).default('medium'),
   CLAUDE_MAX_BUDGET_USD: optionalPositiveNumber,
+  IMPLEMENTATION_AGENT: z.enum(['codex', 'claude']).default('codex'),
 
   MAX_REVIEW_LOOPS: z.coerce.number().int().min(0).max(50).default(3),
   MAX_JOB_RUNTIME_MINUTES: z.coerce.number().int().min(1).max(1440).default(60),
@@ -84,6 +85,7 @@ export interface AppConfig {
     claudeEffort: 'low' | 'medium' | 'high';
     codexEffort: 'low' | 'medium' | 'high';
     claudeMaxBudgetUsd: number | undefined;
+    implementationAgent: 'codex' | 'claude';
   };
   limits: {
     maxReviewLoops: number;
@@ -159,6 +161,7 @@ export function loadConfig(source: NodeJS.ProcessEnv = process.env): AppConfig {
       claudeEffort: env.CLAUDE_EFFORT,
       codexEffort: env.CODEX_EFFORT,
       claudeMaxBudgetUsd: env.CLAUDE_MAX_BUDGET_USD,
+      implementationAgent: env.IMPLEMENTATION_AGENT,
     },
     limits: {
       maxReviewLoops: env.MAX_REVIEW_LOOPS,

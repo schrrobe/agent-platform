@@ -98,6 +98,7 @@ export function registerProjectRoutes(
       maxChangedFiles: input.maxChangedFiles,
       maxDiffBytes: input.maxDiffBytes,
       blockedPaths: input.blockedPaths,
+      linearStateSync: input.linearStateSync,
       active: input.active,
     });
     reply.code(201);

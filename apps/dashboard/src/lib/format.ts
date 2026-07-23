@@ -50,6 +50,15 @@ export function formatCost(value: number): string {
   return `$${value.toFixed(digits)}`;
 }
 
+/** Disk-Größe aus Kilobyte, z. B. 2048 → "2.0 MB", null → "—". */
+export function formatSizeKb(kb: number | null): string {
+  if (kb == null) return '—';
+  if (kb < 1024) return `${kb} KB`;
+  const mb = kb / 1024;
+  if (mb < 1024) return `${mb.toFixed(1)} MB`;
+  return `${(mb / 1024).toFixed(2)} GB`;
+}
+
 export function relativeTime(iso: string | null, now: number = Date.now()): string {
   if (!iso) return '—';
   const diff = now - new Date(iso).getTime();

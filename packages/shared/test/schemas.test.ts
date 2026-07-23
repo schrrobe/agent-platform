@@ -3,7 +3,10 @@ import {
   commandStringSchema,
   identifierSchema,
   importRequestSchema,
+  linearStateSyncSchema,
   projectCreateSchema,
+  requestChangesSchema,
+  retryBodySchema,
 } from '../src/schemas.js';
 
 describe('identifierSchema', () => {
@@ -17,6 +20,32 @@ describe('identifierSchema', () => {
     for (const bad of ['APP', '123', 'APP_123', 'APP-', '-123', 'APP-12a', '../etc', 'a b-1']) {
       expect(identifierSchema.safeParse(bad).success, bad).toBe(false);
     }
+  });
+});
+
+describe('requestChangesSchema', () => {
+  it('verlangt eine nicht-leere Note', () => {
+    expect(requestChangesSchema.safeParse({ note: '' }).success).toBe(false);
+    expect(requestChangesSchema.safeParse({ note: '   ' }).success).toBe(false);
+    expect(requestChangesSchema.parse({ note: ' bitte X ändern ' }).note).toBe('bitte X ändern');
+  });
+});
+
+describe('retryBodySchema', () => {
+  it('macht die Note optional mit Leer-Default', () => {
+    expect(retryBodySchema.parse({}).note).toBe('');
+    expect(retryBodySchema.parse({ note: 'feedback' }).note).toBe('feedback');
+  });
+});
+
+describe('linearStateSyncSchema', () => {
+  it('setzt fehlende State-IDs auf null', () => {
+    const parsed = linearStateSyncSchema.parse({ teamKey: 'APP' });
+    expect(parsed).toEqual({ teamKey: 'APP', onStart: null, onReadyForHuman: null, onDone: null });
+  });
+
+  it('verlangt einen teamKey', () => {
+    expect(linearStateSyncSchema.safeParse({ onStart: 'x' }).success).toBe(false);
   });
 });
 

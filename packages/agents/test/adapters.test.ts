@@ -326,21 +326,26 @@ describe('buildChildEnv', () => {
       HOME: '/home/real',
       ANTHROPIC_API_KEY: 'ant',
       OPENAI_API_KEY: 'openai',
+      OPENAI_BASE_URL: 'http://127.0.0.1:8799',
       CODEX_HOME: '/home/real/.codex',
     };
     const codex = buildCodexEnv(source);
     expect(codex.OPENAI_API_KEY).toBe('openai');
+    // Proxy-Base-URL (z. B. Headroom) wird durchgereicht.
+    expect(codex.OPENAI_BASE_URL).toBe('http://127.0.0.1:8799');
     expect(codex.ANTHROPIC_API_KEY).toBeUndefined();
 
     const git = buildGitEnv(source, '/tmp/git-home');
     expect(git.HOME).toBe('/tmp/git-home');
     expect(git.OPENAI_API_KEY).toBeUndefined();
+    expect(git.OPENAI_BASE_URL).toBeUndefined();
     expect(git.GIT_CONFIG_NOSYSTEM).toBe('1');
 
     const tests = buildTestEnv('/tmp/test-home', source);
     expect(tests.HOME).toBe('/tmp/test-home');
     expect(tests.ANTHROPIC_API_KEY).toBeUndefined();
     expect(tests.OPENAI_API_KEY).toBeUndefined();
+    expect(tests.OPENAI_BASE_URL).toBeUndefined();
     expect(tests.CODEX_HOME).toBeUndefined();
   });
 });

@@ -1,8 +1,13 @@
 import type { AgentExecutionInput, AgentUsage, ProcessResult, ProcessRunner } from '@agent/shared';
-import { PLAN_RESULT_JSON_SCHEMA, REVIEW_RESULT_JSON_SCHEMA } from '@agent/shared';
+import {
+  IMPLEMENTATION_RESULT_JSON_SCHEMA,
+  PLAN_RESULT_JSON_SCHEMA,
+  REVIEW_RESULT_JSON_SCHEMA,
+} from '@agent/shared';
 import { CliAgentAdapter } from './base.js';
 
 export const CLAUDE_READONLY_TOOLS = 'Read,Glob,Grep';
+export const CLAUDE_IMPLEMENTATION_TOOLS = 'Read,Glob,Grep,Edit,Write';
 
 export interface ClaudeAdapterOptions {
   runner: ProcessRunner;
@@ -35,18 +40,24 @@ export class ClaudeCodeAdapter extends CliAgentAdapter {
   }
 
   protected buildArgs(input: AgentExecutionInput): string[] {
+    const writable = input.phase === 'implement' || input.phase === 'rework';
     const args = [
       '-p',
       '--output-format',
       'json',
       '--tools',
-      CLAUDE_READONLY_TOOLS,
+      writable ? CLAUDE_IMPLEMENTATION_TOOLS : CLAUDE_READONLY_TOOLS,
       '--permission-mode',
-      'plan',
+      writable ? 'acceptEdits' : 'plan',
       '--safe-mode',
       '--no-session-persistence',
     ];
-    const schema = input.phase === 'plan' ? PLAN_RESULT_JSON_SCHEMA : REVIEW_RESULT_JSON_SCHEMA;
+    const schema =
+      input.phase === 'plan'
+        ? PLAN_RESULT_JSON_SCHEMA
+        : input.phase === 'review'
+          ? REVIEW_RESULT_JSON_SCHEMA
+          : IMPLEMENTATION_RESULT_JSON_SCHEMA;
     args.push('--json-schema', JSON.stringify(schema));
     if (this.model) args.push('--model', this.model);
     if (this.effort) args.push('--effort', this.effort);

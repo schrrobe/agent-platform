@@ -9,6 +9,7 @@ export const JOB_STATES = [
   'awaiting_plan_approval',
   'implementing',
   'testing',
+  'awaiting_diff_approval',
   'review',
   'rework',
   'needs_human',
@@ -31,6 +32,11 @@ export type JobState = (typeof JOB_STATES)[number];
  *   zum Menschen statt still zu scheitern.
  * - `testing → paused` und `review → paused`: Pause ist ein Soft-Request, der an
  *   Phasengrenzen greift — auch nach Test- und Review-Phase.
+ * - `testing → awaiting_diff_approval`: Diff-Gate im Modus `approve_diff` — der Mensch
+ *   bestätigt den Iterations-Diff, bevor das Review läuft (Spiegel des Plan-Gates).
+ * - `ready_for_human → agent_ready`: „Änderungen anfordern" mit Pflicht-Feedback über
+ *   den dedizierten Endpoint — bewusst NICHT in MANUAL_TRANSITIONS (kein Board-Drag,
+ *   sonst würde der Job ohne Feedback bei preflight neu starten).
  */
 export const TRANSITIONS: Readonly<Record<JobState, readonly JobState[]>> = {
   inbox: ['agent_ready', 'failed', 'paused'],
@@ -48,12 +54,13 @@ export const TRANSITIONS: Readonly<Record<JobState, readonly JobState[]>> = {
   planning: ['awaiting_plan_approval', 'implementing', 'needs_human', 'failed', 'paused'],
   awaiting_plan_approval: ['agent_ready', 'inbox', 'failed'],
   implementing: ['testing', 'needs_human', 'failed', 'paused'],
-  testing: ['review', 'rework', 'needs_human', 'failed', 'paused'],
+  testing: ['review', 'awaiting_diff_approval', 'rework', 'needs_human', 'failed', 'paused'],
+  awaiting_diff_approval: ['agent_ready', 'inbox', 'failed'],
   review: ['ready_for_human', 'rework', 'needs_human', 'failed', 'paused'],
   rework: ['implementing', 'paused'],
   failed: ['agent_ready', 'paused'],
   needs_human: ['agent_ready', 'ready_for_human', 'failed', 'paused'],
-  ready_for_human: ['done'],
+  ready_for_human: ['done', 'agent_ready'],
   paused: ['agent_ready', 'inbox', 'failed'],
   done: [],
 };
@@ -71,6 +78,7 @@ export const MANUAL_TRANSITIONS: Readonly<Record<JobState, readonly JobState[]>>
   awaiting_plan_approval: ['inbox'],
   implementing: [],
   testing: [],
+  awaiting_diff_approval: ['inbox'],
   review: [],
   rework: [],
   failed: ['agent_ready'],

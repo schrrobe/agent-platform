@@ -22,4 +22,15 @@ export class KeyedMutex {
     );
     return next;
   }
+
+  /** Sperrt mehrere Schlüssel in stabiler Reihenfolge und verhindert Deadlocks. */
+  runMany<T>(keys: readonly string[], task: () => Promise<T> | T): Promise<T> {
+    const unique = [...new Set(keys)].sort();
+    const acquire = (index: number): Promise<T> => {
+      const key = unique[index];
+      if (key === undefined) return Promise.resolve(task());
+      return this.run(key, () => acquire(index + 1));
+    };
+    return acquire(0);
+  }
 }

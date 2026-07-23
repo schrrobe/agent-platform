@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from 'vitest';
 import {
   LinearError,
   LinearService,
+  resolveLinearSyncState,
   type LinearClientLike,
   type LinearIssueLike,
 } from '../src/import.js';
@@ -106,6 +107,57 @@ describe('LinearService.fetchTicket', () => {
   it('wirft verständlich ohne API-Key', async () => {
     const service = new LinearService({});
     await expect(service.fetchTicket('APP-123')).rejects.toThrow(/LINEAR_API_KEY/);
+  });
+});
+
+describe('resolveLinearSyncState', () => {
+  const config = {
+    teamKey: 'APP',
+    onStart: 'state-start',
+    onReadyForHuman: null,
+    onDone: 'state-done',
+  };
+
+  it('liefert die gemappte State-ID bei passendem Team', () => {
+    expect(resolveLinearSyncState(config, 'APP', 'onStart')).toBe('state-start');
+    expect(resolveLinearSyncState(config, 'APP', 'onDone')).toBe('state-done');
+  });
+
+  it('liefert null bei nicht gemapptem Ereignis, teamKey-Mismatch oder fehlender Konfig', () => {
+    expect(resolveLinearSyncState(config, 'APP', 'onReadyForHuman')).toBeNull();
+    expect(resolveLinearSyncState(config, 'WEB', 'onStart')).toBeNull();
+    expect(resolveLinearSyncState(config, null, 'onStart')).toBeNull();
+    expect(resolveLinearSyncState(null, 'APP', 'onStart')).toBeNull();
+  });
+});
+
+describe('LinearService.updateState / listTeamStates', () => {
+  it('setzt den Status und prüft den Erfolg', async () => {
+    const updateIssue = vi.fn(async () => ({ success: true }));
+    const service = new LinearService({ client: { issue: vi.fn(), updateIssue } });
+    await service.updateState('uuid-1', 'state-done');
+    expect(updateIssue).toHaveBeenCalledWith('uuid-1', { stateId: 'state-done' });
+  });
+
+  it('wirft LinearError, wenn Linear die Änderung nicht bestätigt', async () => {
+    const updateIssue = vi.fn(async () => ({ success: false }));
+    const service = new LinearService({ client: { issue: vi.fn(), updateIssue } });
+    await expect(service.updateState('uuid-1', 'state-done')).rejects.toThrow(LinearError);
+  });
+
+  it('sortiert Team-States nach Position', async () => {
+    const teamStates = vi.fn(async () => [
+      { id: 'b', name: 'Done', type: 'completed', position: 2 },
+      { id: 'a', name: 'Todo', type: 'unstarted', position: 1 },
+    ]);
+    const service = new LinearService({ client: { issue: vi.fn(), teamStates } });
+    const states = await service.listTeamStates('APP');
+    expect(states.map((s) => s.id)).toEqual(['a', 'b']);
+  });
+
+  it('wirft ohne Client-Fähigkeit', async () => {
+    const service = new LinearService({ client: { issue: vi.fn() } });
+    await expect(service.listTeamStates('APP')).rejects.toThrow(LinearError);
   });
 });
 

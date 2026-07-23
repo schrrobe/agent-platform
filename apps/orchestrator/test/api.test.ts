@@ -191,6 +191,83 @@ describe('REST API', () => {
     });
   });
 
+  it('gruppiert mehrere Inbox-Jobs zu einem Vorgang', async () => {
+    harness = await createHarness();
+    const a = harness.seedJob('APP-1');
+    const b = harness.seedJob('APP-2');
+    const c = harness.seedJob('APP-3');
+
+    const res = await harness.app.inject({
+      method: 'POST',
+      url: '/api/jobs/group',
+      payload: { jobIds: [a.id, b.id, c.id] },
+    });
+
+    expect(res.statusCode).toBe(200);
+    const job = res.json().job;
+    expect(job.additionalTickets).toHaveLength(2);
+
+    // Aus drei Jobs wird einer.
+    const list = await harness.app.inject({ method: 'GET', url: '/api/jobs' });
+    expect(list.json().jobs).toHaveLength(1);
+    expect(list.json().jobs[0].additionalTickets).toHaveLength(2);
+  });
+
+  it('lehnt Gruppierung ab, wenn ein Job nicht im Inbox ist', async () => {
+    harness = await createHarness();
+    const a = harness.seedJob('APP-1');
+    const b = harness.seedJob('APP-2');
+    harness.ctx.repos.jobs.update(b.id, { state: 'planning' });
+
+    const res = await harness.app.inject({
+      method: 'POST',
+      url: '/api/jobs/group',
+      payload: { jobIds: [a.id, b.id] },
+    });
+
+    expect(res.statusCode).toBe(409);
+    expect(res.json().error.code).toBe('CONFLICT');
+  });
+
+  it('lehnt Gruppierung mit weniger als zwei Jobs ab', async () => {
+    harness = await createHarness();
+    const a = harness.seedJob('APP-1');
+    const res = await harness.app.inject({
+      method: 'POST',
+      url: '/api/jobs/group',
+      payload: { jobIds: [a.id] },
+    });
+    expect(res.statusCode).toBe(400);
+    expect(res.json().error.code).toBe('VALIDATION_ERROR');
+  });
+
+  it('löst ein Ticket wieder aus einem Vorgang und legt einen neuen Inbox-Job an', async () => {
+    harness = await createHarness();
+    const a = harness.seedJob('APP-1');
+    const b = harness.seedJob('APP-2');
+    const grouped = await harness.app.inject({
+      method: 'POST',
+      url: '/api/jobs/group',
+      payload: { jobIds: [a.id, b.id] },
+    });
+    const survivor = grouped.json().job;
+    const secondaryTicketId = survivor.additionalTickets[0].id;
+
+    const res = await harness.app.inject({
+      method: 'POST',
+      url: `/api/jobs/${survivor.id}/ungroup`,
+      payload: { ticketId: secondaryTicketId },
+    });
+
+    expect(res.statusCode).toBe(200);
+    expect(res.json().job.additionalTickets).toHaveLength(0);
+    expect(res.json().newJob.state).toBe('inbox');
+    expect(res.json().newJob.ticket.id).toBe(secondaryTicketId);
+
+    const list = await harness.app.inject({ method: 'GET', url: '/api/jobs' });
+    expect(list.json().jobs).toHaveLength(2);
+  });
+
   it('behält die lokale Beschreibung bei, wenn Linear das Update ablehnt', async () => {
     const client = {
       ...fakeLinear(),
@@ -387,5 +464,130 @@ describe('REST API', () => {
 
     const detail = await harness.app.inject({ method: 'GET', url: `/api/jobs/${job.id}` });
     expect(detail.json().job.reviewIterations.at(-1).verdict).toBe('PASS');
+  });
+
+  it('hält im Modus approve_diff am Diff-Gate und setzt nach Freigabe fort', async () => {
+    harness = await createHarness({ reviewSequence: 'PASS', autonomyMode: 'approve_diff' });
+    const job = harness.seedJob('APP-520');
+    await harness.ctx.jobs.start(job.id);
+    expect(await harness.waitForState(job.id, ['awaiting_diff_approval'])).toBe(
+      'awaiting_diff_approval',
+    );
+    expect(
+      harness.ctx.repos.artifacts.listByJob(job.id).some((a) => a.type === 'diff'),
+    ).toBe(true);
+
+    const res = await harness.app.inject({
+      method: 'POST',
+      url: `/api/jobs/${job.id}/approve-diff`,
+      payload: { note: '' },
+    });
+    expect(res.statusCode).toBe(200);
+    expect(await harness.waitForState(job.id, ['ready_for_human', 'failed', 'needs_human'])).toBe(
+      'ready_for_human',
+    );
+  });
+
+  it('schickt ready_for_human per request-changes mit Feedback zurück in die Nacharbeit', async () => {
+    harness = await createHarness({ reviewSequence: 'PASS' });
+    const job = harness.seedJob('APP-521');
+    await harness.ctx.jobs.start(job.id);
+    await harness.waitForState(job.id, ['ready_for_human']);
+
+    const res = await harness.app.inject({
+      method: 'POST',
+      url: `/api/jobs/${job.id}/request-changes`,
+      payload: { note: 'Bitte Fehlerbehandlung ergänzen.' },
+    });
+    expect(res.statusCode).toBe(200);
+    expect(
+      harness.ctx.repos.artifacts.listByJob(job.id).some((a) => a.type === 'human_feedback'),
+    ).toBe(true);
+    await harness.waitForState(job.id, ['ready_for_human', 'failed', 'needs_human']);
+  });
+
+  it('lehnt request-changes ohne Note (400) und approve-diff aus falschem Zustand (409) ab', async () => {
+    harness = await createHarness();
+    const job = harness.seedJob('APP-522');
+    harness.ctx.repos.jobs.update(job.id, { state: 'ready_for_human', finishedAt: new Date().toISOString() });
+
+    const noNote = await harness.app.inject({
+      method: 'POST',
+      url: `/api/jobs/${job.id}/request-changes`,
+      payload: { note: '' },
+    });
+    expect(noNote.statusCode).toBe(400);
+
+    const wrongState = await harness.app.inject({
+      method: 'POST',
+      url: `/api/jobs/${job.id}/approve-diff`,
+      payload: { note: '' },
+    });
+    expect(wrongState.statusCode).toBe(409);
+  });
+
+  it('akzeptiert Retry-Feedback nur aus needs_human', async () => {
+    harness = await createHarness();
+    const job = harness.seedJob('APP-523');
+    harness.ctx.repos.jobs.update(job.id, { state: 'failed', lastError: 'x' });
+    const res = await harness.app.inject({
+      method: 'POST',
+      url: `/api/jobs/${job.id}/retry`,
+      payload: { note: 'geht nicht' },
+    });
+    expect(res.statusCode).toBe(409);
+  });
+
+  it('ordnet wartende Jobs manuell um (Drop an den Anfang)', async () => {
+    harness = await createHarness();
+    const a = harness.seedJob('APP-530');
+    const b = harness.seedJob('APP-531');
+
+    const reorder = await harness.app.inject({
+      method: 'PATCH',
+      url: `/api/jobs/${b.id}/queue-position`,
+      payload: { afterJobId: null },
+    });
+    expect(reorder.statusCode).toBe(200);
+    expect(harness.ctx.repos.jobs.listByStateOrdered('inbox').map((j) => j.id)).toEqual([
+      b.id,
+      a.id,
+    ]);
+  });
+
+  it('priorisiert höhere Queue-Priorität vor der manuellen Reihenfolge', async () => {
+    harness = await createHarness();
+    const a = harness.seedJob('APP-532');
+    const b = harness.seedJob('APP-533');
+    const prio = await harness.app.inject({
+      method: 'PATCH',
+      url: `/api/jobs/${b.id}/priority`,
+      payload: { priority: 1 },
+    });
+    expect(prio.statusCode).toBe(200);
+    // b hat höhere Priorität → trotz späterer Insert-Zeit zuerst.
+    expect(harness.ctx.repos.jobs.listByStateOrdered('inbox').map((j) => j.id)).toEqual([
+      b.id,
+      a.id,
+    ]);
+  });
+
+  it('setzt die Parallelität über die Settings-Route', async () => {
+    harness = await createHarness();
+    const res = await harness.app.inject({
+      method: 'PATCH',
+      url: '/api/settings',
+      payload: { maxConcurrentJobs: 3 },
+    });
+    expect(res.statusCode).toBe(200);
+    expect(res.json().maxConcurrentJobs).toBe(3);
+    expect(harness.ctx.config.limits.maxConcurrentJobs).toBe(3);
+  });
+
+  it('listet Worktrees für die Wartung', async () => {
+    harness = await createHarness();
+    const res = await harness.app.inject({ method: 'GET', url: '/api/maintenance/worktrees' });
+    expect(res.statusCode).toBe(200);
+    expect(Array.isArray(res.json().worktrees)).toBe(true);
   });
 });
