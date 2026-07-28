@@ -4,7 +4,7 @@ import { loadConfig } from '../src/config.js';
 describe('loadConfig model overrides', () => {
   it('verwendet die kuratierten Defaults, wenn Variablen fehlen', () => {
     const config = loadConfig({});
-    expect(config.agents.claudeModel).toBe('opus');
+    expect(config.agents.claudeModel).toBe('claude-opus-5');
     expect(config.agents.codexModel).toBe('gpt-5.6-sol');
     expect(config.gitIdentity).toEqual({
       name: 'Robert Schreiner',

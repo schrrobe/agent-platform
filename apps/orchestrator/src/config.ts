@@ -38,7 +38,7 @@ const envSchema = z.object({
   CLAUDE_BIN: z.string().default('claude'),
   CODEX_BIN: z.string().default('codex'),
   SRT_BIN: z.string().default('srt'),
-  CLAUDE_MODEL: z.string().optional().default('opus'),
+  CLAUDE_MODEL: z.string().optional().default('claude-opus-5'),
   CODEX_MODEL: z.string().optional().default('gpt-5.6-sol'),
   CLAUDE_EFFORT: z.enum(['low', 'medium', 'high']).default('high'),
   CODEX_EFFORT: z.enum(['low', 'medium', 'high']).default('medium'),

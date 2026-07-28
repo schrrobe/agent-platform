@@ -173,7 +173,7 @@ ungültigen Werten bricht der Orchestrator mit einer verständlichen Meldung ab.
 | `GIT_AUTHOR_EMAIL`               | `robsch@stagedates.com`  | E-Mail für Autor und Committer automatischer Git-Commits                |
 | `CLAUDE_BIN` / `CODEX_BIN`       | `claude` / `codex`       | Pfad/Name der CLIs                                                      |
 | `SRT_BIN`                        | `srt`                    | Sandbox-Runtime für Projektbefehle                                      |
-| `CLAUDE_MODEL` / `CODEX_MODEL`   | `opus` / `gpt-5.6-sol`   | Modell-Overrides; leer verwendet den jeweiligen CLI-Default             |
+| `CLAUDE_MODEL` / `CODEX_MODEL`   | `claude-opus-5` / `gpt-5.6-sol` | Modell-Overrides; leer verwendet den jeweiligen CLI-Default      |
 | `CLAUDE_EFFORT` / `CODEX_EFFORT` | `high` / `medium`        | Reasoning-Effort der jeweiligen CLI                                     |
 | `CLAUDE_MAX_BUDGET_USD`          | –                        | Optionales Kostenlimit pro Claude-Aufruf                                |
 | `MAX_REVIEW_LOOPS`               | `3`                      | Maximale Nacharbeitsschleifen                                           |
