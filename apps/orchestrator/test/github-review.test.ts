@@ -279,7 +279,8 @@ describe('GithubReviewService', () => {
   });
 
   it('hält Queue-Slot und Aktivstatus bis nach Push/Resolve und verhindert Doppelläufe', async () => {
-    harness = await createHarness({ testCommand: null, maxConcurrentJobs: 2 });
+    // Parallelität 1: der Lease der Nacharbeit belegt den einzigen Slot.
+    harness = await createHarness({ testCommand: null, maxConcurrentJobs: 1 });
     const reviewed = harness.seedJob('APP-704');
     const waiting = harness.seedJob('APP-705');
     await harness.ctx.jobs.start(reviewed.id);

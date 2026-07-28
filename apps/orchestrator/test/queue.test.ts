@@ -8,27 +8,53 @@ afterEach(async () => {
 });
 
 describe('JobQueue', () => {
-  it('lässt trotz Parallelität > 1 nur einen Schreibjob pro Projekt laufen', async () => {
+  it('führt mehrere Jobs desselben Projekts bis zur Parallelitätsgrenze gleichzeitig aus', async () => {
     // Langsame Testphase erzeugt ein Beobachtungsfenster.
     harness = await createHarness({
       reviewSequence: 'PASS',
-      maxConcurrentJobs: 4,
+      maxConcurrentJobs: 3,
       testCommand: nodeCommand('setTimeout(function(){process.exit(0)},400)'),
     });
     const a = harness.seedJob('APP-201');
     const b = harness.seedJob('APP-202');
+    const c = harness.seedJob('APP-203');
 
     await harness.ctx.jobs.start(a.id);
     await harness.ctx.jobs.start(b.id);
+    await harness.ctx.jobs.start(c.id);
     await new Promise((r) => setTimeout(r, 120));
 
-    // Beide gehören zum selben Projekt → höchstens einer läuft.
-    expect(harness.ctx.queue.runningJobIds().length).toBe(1);
+    // Gleiches Projekt, eigene Worktrees → alle drei laufen nebenläufig.
+    expect(harness.ctx.queue.runningJobIds().length).toBe(3);
 
-    await harness.waitForState(a.id, ['ready_for_human']);
-    await harness.waitForState(b.id, ['ready_for_human']);
-    expect(harness.ctx.repos.jobs.get(a.id)!.state).toBe('ready_for_human');
-    expect(harness.ctx.repos.jobs.get(b.id)!.state).toBe('ready_for_human');
+    for (const job of [a, b, c]) {
+      await harness.waitForState(job.id, ['ready_for_human']);
+      expect(harness.ctx.repos.jobs.get(job.id)!.state).toBe('ready_for_human');
+    }
+    // Jeder Job bekam seinen eigenen Branch und Worktree.
+    const worktrees = [a, b, c].map((job) => harness!.ctx.repos.jobs.get(job.id)!.worktreePath);
+    const branches = [a, b, c].map((job) => harness!.ctx.repos.jobs.get(job.id)!.branch);
+    expect(new Set(worktrees).size).toBe(3);
+    expect(new Set(branches).size).toBe(3);
+  });
+
+  it('hält Jobs über der Parallelitätsgrenze zurück', async () => {
+    harness = await createHarness({
+      reviewSequence: 'PASS',
+      maxConcurrentJobs: 2,
+      testCommand: nodeCommand('setTimeout(function(){process.exit(0)},400)'),
+    });
+    const jobs = [
+      harness.seedJob('APP-211'),
+      harness.seedJob('APP-212'),
+      harness.seedJob('APP-213'),
+    ];
+    for (const job of jobs) await harness.ctx.jobs.start(job.id);
+    await new Promise((r) => setTimeout(r, 120));
+
+    expect(harness.ctx.queue.runningJobIds().length).toBe(2);
+
+    for (const job of jobs) await harness.waitForState(job.id, ['ready_for_human']);
   });
 
   it('enqueue ist idempotent', async () => {

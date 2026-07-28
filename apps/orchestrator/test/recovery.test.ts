@@ -68,6 +68,19 @@ describe('Neustart-Recovery', () => {
     expect(harness.ctx.repos.jobs.get(job.id)!.state).toBe('failed');
   });
 
+  it('reiht wartende agent_ready-Jobs nach dem Neustart wieder ein', async () => {
+    harness = await createHarness();
+    const job = harness.seedJob('APP-407');
+    // Vom Menschen gestartet, aber vor dem Neustart nie an die Reihe gekommen.
+    harness.ctx.repos.jobs.update(job.id, { state: 'agent_ready', resumePhase: 'preflight' });
+
+    const result = await runRecovery(harness.ctx);
+
+    expect(result.requeuedJobs).toBe(1);
+    expect(harness.ctx.queue.isQueued(job.id)).toBe(true);
+    expect(await harness.waitForState(job.id, ['ready_for_human'])).toBe('ready_for_human');
+  });
+
   it('räumt eine unterbrochene GitHub-Nacharbeit auf und erhält den geprüften HEAD', async () => {
     harness = await createHarness();
     const seeded = harness.seedJob('APP-405');

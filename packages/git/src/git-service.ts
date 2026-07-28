@@ -3,7 +3,6 @@ import os from 'node:os';
 import path from 'node:path';
 import type { ProcessResult, ProcessRunner } from '@agent/shared';
 import {
-  branchForIdentifier,
   branchForTicket,
   isPathInside,
   isSameOrInside,
@@ -126,12 +125,36 @@ export class GitService {
   private readonly env: Record<string, string>;
   private readonly timeoutMs: number;
   private readonly identity: GitIdentity;
+  private readonly repoLocks = new Map<string, Promise<unknown>>();
 
   constructor(options: GitServiceOptions) {
     this.runner = options.runner;
     this.env = options.env;
     this.timeoutMs = options.commandTimeoutMs ?? 120_000;
     this.identity = options.identity ?? DEFAULT_IDENTITY;
+  }
+
+  /**
+   * Serialisiert repo-weite Schreiboperationen (Branch-Vergabe, `worktree
+   * add/remove`) je Repository. Nebenläufige Jobs desselben Projekts arbeiten in
+   * eigenen Worktrees mit eigener `index.lock`, teilen aber `.git` — nur die
+   * repo-globalen Abschnitte brauchen daher einen Riegel.
+   */
+  private withRepoLock<T>(repositoryPath: string, task: () => Promise<T>): Promise<T> {
+    const key = canonicalPath(path.resolve(repositoryPath));
+    const previous = this.repoLocks.get(key) ?? Promise.resolve();
+    const next = previous.then(
+      () => task(),
+      () => task(),
+    );
+    this.repoLocks.set(
+      key,
+      next.then(
+        () => undefined,
+        () => undefined,
+      ),
+    );
+    return next;
   }
 
   private async git(
@@ -201,12 +224,14 @@ export class GitService {
     title: string,
     kind: BranchKind,
   ): Promise<string> {
-    const base = branchForTicket(identifier, title, kind);
-    for (let attempt = 0; attempt < 100; attempt += 1) {
-      const candidate = attempt === 0 ? base : `${base}-${attempt + 1}`;
-      if (!(await this.branchExists(repositoryPath, candidate))) return candidate;
-    }
-    throw new GitConflictError(`Kein freier Branchname für ${identifier} gefunden`);
+    return this.withRepoLock(repositoryPath, async () => {
+      const base = branchForTicket(identifier, title, kind);
+      for (let attempt = 0; attempt < 100; attempt += 1) {
+        const candidate = attempt === 0 ? base : `${base}-${attempt + 1}`;
+        if (!(await this.branchExists(repositoryPath, candidate))) return candidate;
+      }
+      throw new GitConflictError(`Kein freier Branchname für ${identifier} gefunden`);
+    });
   }
 
   private async hasTrackedAgentDirectory(repositoryPath: string, ref: string): Promise<boolean> {
@@ -300,6 +325,10 @@ export class GitService {
    * beschädigte oder unbekannte Pfade werden niemals automatisch entfernt.
    */
   async ensureWorktree(input: EnsureWorktreeInput): Promise<EnsureWorktreeResult> {
+    return this.withRepoLock(input.repositoryPath, () => this.ensureWorktreeUnlocked(input));
+  }
+
+  private async ensureWorktreeUnlocked(input: EnsureWorktreeInput): Promise<EnsureWorktreeResult> {
     const repositoryPath = path.resolve(input.repositoryPath);
     const branch =
       input.expectedBranch ??
@@ -533,7 +562,9 @@ export class GitService {
   ): Promise<void> {
     this.verifyOwner(worktreePath, expected);
     await this.assertWorktreeClean(worktreePath);
-    await this.removeWorktreeInternal(repositoryPath, worktreePath);
+    await this.withRepoLock(repositoryPath, () =>
+      this.removeWorktreeInternal(repositoryPath, worktreePath),
+    );
   }
 
   /**
@@ -553,17 +584,19 @@ export class GitService {
     if (canonicalPath(worktreePath) === canonicalPath(repositoryPath)) {
       throw new GitConflictError('Das Haupt-Repository kann nicht entfernt werden');
     }
-    const entries = await this.listWorktrees(repositoryPath);
-    const registered = entries.some(
-      (entry) => canonicalPath(entry.path) === canonicalPath(worktreePath),
-    );
-    if (!registered) {
-      throw new GitConflictError(
-        `Worktree ${worktreePath} ist bei ${repositoryPath} nicht registriert`,
+    await this.withRepoLock(repositoryPath, async () => {
+      const entries = await this.listWorktrees(repositoryPath);
+      const registered = entries.some(
+        (entry) => canonicalPath(entry.path) === canonicalPath(worktreePath),
       );
-    }
-    await this.assertWorktreeClean(worktreePath);
-    await this.removeWorktreeInternal(repositoryPath, worktreePath);
+      if (!registered) {
+        throw new GitConflictError(
+          `Worktree ${worktreePath} ist bei ${repositoryPath} nicht registriert`,
+        );
+      }
+      await this.assertWorktreeClean(worktreePath);
+      await this.removeWorktreeInternal(repositoryPath, worktreePath);
+    });
   }
 
   /**

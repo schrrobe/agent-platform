@@ -5,12 +5,20 @@ import type { AppContext } from './context.js';
  * Neustart-Wiederherstellung (ADR-009). Nach einem Absturz können Kindprozesse
  * überleben und Worktrees mutieren. Beim Start werden daher überlebende
  * Prozessgruppen beendet und alle Jobs in aktiven Zuständen als „durch Neustart
- * unterbrochen" markiert. Es wird NICHTS automatisch neu gestartet — Retry ist
- * ausschließlich explizit.
+ * unterbrochen" markiert. Ein unterbrochener Agentenlauf wird NICHT automatisch
+ * neu gestartet — Retry ist ausschließlich explizit.
+ *
+ * Ausnahme ist die Warteschlange selbst: `agent_ready` bedeutet „vom Menschen
+ * gestartet, wartet auf einen Slot". Diese Reihung lebt nur im Prozess und ginge
+ * beim Neustart verloren — die Jobs würden ohne Fehlermeldung ewig liegen
+ * bleiben. Sie werden daher wieder eingereiht; ein Agent lief für sie noch nicht.
  */
-export async function runRecovery(
-  ctx: AppContext,
-): Promise<{ killedGroups: number; failedJobs: number; recoveredActions: number }> {
+export async function runRecovery(ctx: AppContext): Promise<{
+  killedGroups: number;
+  failedJobs: number;
+  recoveredActions: number;
+  requeuedJobs: number;
+}> {
   const log = ctx.logger.child({ scope: 'recovery' });
 
   let killedGroups = 0;
@@ -83,12 +91,19 @@ export async function runRecovery(
     log.warn({ jobId: job.id, state: job.state }, message);
   }
 
-  if (killedGroups > 0 || active.length > 0 || interruptedActions.length > 0) {
+  const queued = ctx.repos.jobs.listByStates(['agent_ready']);
+  for (const job of queued) {
+    ctx.queue.enqueue(job.id);
+    log.info({ jobId: job.id }, 'Wartenden Job erneut eingereiht');
+  }
+
+  if (killedGroups > 0 || active.length > 0 || interruptedActions.length > 0 || queued.length > 0) {
     log.info(
       {
         killedGroups,
         failedJobs: active.length,
         recoveredActions: interruptedActions.length,
+        requeuedJobs: queued.length,
       },
       'Recovery abgeschlossen',
     );
@@ -97,5 +112,6 @@ export async function runRecovery(
     killedGroups,
     failedJobs: active.length,
     recoveredActions: interruptedActions.length,
+    requeuedJobs: queued.length,
   };
 }

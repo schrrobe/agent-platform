@@ -290,7 +290,7 @@ konfigurierten `worktreeRoot`. Die erzeugten Commits liegen jedoch im Git-Objekt
 ## Bekannte Einschränkungen
 
 - Keine eingebaute Authentifizierung/Mandantentrennung — für lokalen Betrieb bzw. hinter Reverse-Proxy gedacht.
-- Job-Queue ist in-process (kein verteiltes Scheduling); Standard-Parallelität 1, pro Projekt ein Schreibjob einschließlich GitHub-Nacharbeit.
+- Job-Queue ist in-process (kein verteiltes Scheduling); Standard-Parallelität 1. Mehrere Jobs desselben Projekts laufen bis zur Parallelitätsgrenze gleichzeitig, jeder in seinem eigenen Worktree; repo-weite Git-Abschnitte (Branch-Vergabe, `worktree add/remove`) serialisiert der `GitService` je Repository. Eine GitHub-Nacharbeit belegt einen regulären Slot.
 - Kein automatischer Merge/PR — bewusst; `ready_for_human` ist ein Agent-Ausführungsstatus und kein Linear-Ticketstatus.
 - `trusted`-Testmodus besitzt keine OS-Isolation und ist ausschließlich für vollständig vertrauenswürdige Repositories vorgesehen.
 - Der sichere Testmodus sperrt Netzwerk vollständig; eine granulare projektbezogene Domain-Allowlist ist noch nicht vorhanden.

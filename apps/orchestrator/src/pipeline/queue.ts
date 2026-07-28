@@ -9,7 +9,6 @@ import { PipelineAbort } from './errors.js';
 interface RunningEntry {
   controller: AbortController;
   deadlineTimer: NodeJS.Timeout;
-  projectId: string;
   kind: 'pipeline' | 'lease';
 }
 
@@ -20,16 +19,18 @@ export interface QueueLease {
 
 interface LeaseRequest {
   jobId: string;
-  projectId: string;
   resolve: (lease: QueueLease) => void;
   reject: (error: Error) => void;
 }
 
 /**
- * Lokale In-Prozess-Job-Queue. Begrenzt die Parallelität (Default 1), erlaubt
- * pro Projekt nur einen laufenden Schreibjob (schützt das geteilte `.git`) und
- * damit auch pro Worktree höchstens einen Job. Neustarts starten Jobs nicht
- * automatisch neu — Retry ist stets explizit (ADR-009).
+ * Lokale In-Prozess-Job-Queue. Begrenzt die Parallelität auf
+ * `limits.maxConcurrentJobs` — auch mehrere Jobs desselben Projekts laufen
+ * nebenläufig, jeder in seinem eigenen Worktree. Repo-weite Git-Abschnitte
+ * (Branch-Vergabe, `worktree add/remove`) serialisiert `GitService` selbst.
+ * Pro Job läuft stets höchstens eine Ausführung (Pipeline oder Lease).
+ * Nach einem Neustart wird nur die Warteschlange (`agent_ready`) wieder
+ * eingereiht; unterbrochene Läufe bleiben explizit (ADR-009).
  */
 export class JobQueue {
   private readonly running = new Map<string, RunningEntry>();
@@ -77,7 +78,7 @@ export class JobQueue {
       return Promise.reject(new Error('Für diesen Job läuft bereits eine Queue-Aktion'));
     }
     return new Promise((resolve, reject) => {
-      this.leaseWaiting.push({ jobId, projectId: job.projectId, resolve, reject });
+      this.leaseWaiting.push({ jobId, resolve, reject });
       this.pump();
     });
   }
@@ -141,13 +142,6 @@ export class JobQueue {
     return entry != null || idx >= 0 || leaseIdx >= 0;
   }
 
-  private hasProjectConflict(projectId: string): boolean {
-    for (const entry of this.running.values()) {
-      if (entry.projectId === projectId) return true;
-    }
-    return false;
-  }
-
   /** Erhöht/senkt die Parallelität zur Laufzeit und füllt frei gewordene Slots sofort. */
   setMaxConcurrent(value: number): void {
     this.deps.config.limits.maxConcurrentJobs = value;
@@ -162,7 +156,7 @@ export class JobQueue {
       .map((jobId) => ({ jobId, job: this.deps.repos.jobs.get(jobId) }))
       .filter(
         (entry): entry is { jobId: string; job: NonNullable<typeof entry.job> } =>
-          entry.job != null && !this.hasProjectConflict(entry.job.projectId),
+          entry.job != null,
       )
       .sort((a, b) => compareQueueOrder(a.job, b.job));
     const idx = candidates.length ? this.waiting.indexOf(candidates[0]!.jobId) : -1;
@@ -170,12 +164,9 @@ export class JobQueue {
       const [jobId] = this.waiting.splice(idx, 1);
       if (jobId) this.start(jobId);
     } else {
-      const leaseIdx = this.leaseWaiting.findIndex(
-        (request) => !this.hasProjectConflict(request.projectId),
-      );
-      if (leaseIdx < 0) return;
-      const [request] = this.leaseWaiting.splice(leaseIdx, 1);
-      if (request) this.startLease(request);
+      const [request] = this.leaseWaiting.splice(0, 1);
+      if (!request) return;
+      this.startLease(request);
     }
     // Weitere Slots füllen, falls Parallelität > 1.
     if (this.running.size < this.deps.config.limits.maxConcurrentJobs) this.pump();
@@ -190,12 +181,7 @@ export class JobQueue {
       } satisfies AbortReason);
     }, this.deps.config.limits.maxJobRuntimeMs);
     deadlineTimer.unref?.();
-    this.running.set(request.jobId, {
-      controller,
-      deadlineTimer,
-      projectId: request.projectId,
-      kind: 'lease',
-    });
+    this.running.set(request.jobId, { controller, deadlineTimer, kind: 'lease' });
     let released = false;
     request.resolve({
       signal: controller.signal,
@@ -230,12 +216,7 @@ export class JobQueue {
     }, this.deps.config.limits.maxJobRuntimeMs);
     deadlineTimer.unref?.();
 
-    this.running.set(jobId, {
-      controller,
-      deadlineTimer,
-      projectId: job.projectId,
-      kind: 'pipeline',
-    });
+    this.running.set(jobId, { controller, deadlineTimer, kind: 'pipeline' });
     const log = this.deps.logger.child({ jobId });
     log.info('Job gestartet');
 
